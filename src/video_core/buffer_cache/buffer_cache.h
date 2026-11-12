@@ -109,6 +109,10 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
         }
     }
     for (const BufferId buffer_id : evicted) {
+        if (create_trace.enabled) {
+            ++create_trace.collected;
+            create_trace.collected_bytes += slot_buffers[buffer_id].SizeBytes();
+        }
         DeleteBuffer(buffer_id);
     }
 }
@@ -127,6 +131,19 @@ void BufferCache<P>::TickFrame() {
         if (const auto now = std::chrono::steady_clock::now(); now - last >= std::chrono::seconds{2}) {
             last = now;
             LOG_INFO(HW_GPU, "Memory trace: buffer cache {} MiB", buffer_bytes >> 20);
+        }
+    }
+    if (CreateTrace& trace = create_trace; trace.enabled) {
+        if (const auto now = std::chrono::steady_clock::now(); now - trace.last >= std::chrono::seconds{10}) {
+            trace.last = now;
+            LOG_INFO(HW_GPU,
+                     "Buffer trace: {} MiB in buffers; in 10 s {} created ({} MiB), {} joined into "
+                     "them ({} MiB copied), {} stream leaps, {} collected ({} MiB)",
+                     buffer_bytes >> 20, trace.creates, trace.created_bytes >> 20, trace.joins,
+                     trace.joined_bytes >> 20, trace.leaps, trace.collected,
+                     trace.collected_bytes >> 20);
+            trace.creates = trace.created_bytes = trace.joins = trace.joined_bytes = trace.leaps =
+                trace.collected = trace.collected_bytes = 0;
         }
     }
     if (const GeometryStats& stats = geometry_stats; frame_tick % 600 == 0 && stats.syncs != 0) {
@@ -343,13 +360,20 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     DAddr device_addr_end_aligned = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
-    if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
+    // Preflushable data is downloaded at fences, but only where it is marked (QueueFenceDownload):
+    // the rest of the range still needs this flush.
+    if (memory_tracker.IsRegionPreflushable(device_addr, size) &&
+        !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
+                                          device_addr_end_aligned - device_addr_start_aligned)) {
         // Fence downloads keep it, once the first read's download is in guest memory.
         area->in_flight = std::ranges::any_of(read_downloads, [&](const ReadDownload& download) {
             return download.write_ranges.Intersects(
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
         });
         area->preemtive = !area->in_flight;
+        // The core keeps this area: a later GPU write to its unmarked pages must arm them again.
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -1455,6 +1479,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
+        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+            Tegra::Nx2MarkGpuWritten(new_base_address, size);
+        }
         QueueFenceDownload(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
@@ -1465,7 +1492,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         gpu_modified_ranges.Add(pair.first, pair.second);
         NoteReadBackWrite(pair.first, pair.second);
         if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
-            Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
             Nx2NoteListWrite(buffer_b, pair.first, pair.second);
         }
     }
@@ -3262,9 +3288,15 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     NoteUniformWrite(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
-    QueueFenceDownload(device_addr, size);
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+    const bool ampere = Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    if (ampere) {
+        // Before QueueFenceDownload arms read traps: guest reads skip the buffer cache's lock on
+        // pages without the mark (RasterizerVulkan::GetFlushArea), and the arm is what ends a
+        // core's read area.
         Tegra::Nx2MarkGpuWritten(device_addr, size);
+    }
+    QueueFenceDownload(device_addr, size);
+    if (ampere) {
         Nx2NoteListWrite(buffer_id, device_addr, size);
     }
 }
@@ -3508,7 +3540,8 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
 }
 
 template <class P>
-BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
+BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible,
+                                    std::source_location caller) {
     const u64 page = device_addr >> CACHING_PAGEBITS;
     if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
@@ -3532,7 +3565,7 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
             }
         }
     }
-    return CreateBuffer(device_addr, size, sparse_compatible);
+    return CreateBuffer(device_addr, size, sparse_compatible, caller);
 }
 
 template <class P>
@@ -3648,14 +3681,35 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
 }
 
 template <class P>
-BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
-                                      bool sparse_compatible) {
+BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size, bool sparse_compatible,
+                                      std::source_location caller) {
     const StutterTrace::SiteScope site{StutterTrace::Site::BufferCreate};
+    const DAddr asked_addr = device_addr;
+    const u32 asked_size = wanted_size;
     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
+    if (CreateTrace& trace = create_trace; trace.enabled) {
+        u64 joined{};
+        for (const BufferId overlap_id : overlap.ids) {
+            joined += slot_buffers[overlap_id].SizeBytes();
+        }
+        ++trace.creates;
+        trace.created_bytes += size;
+        trace.joins += overlap.ids.size();
+        trace.joined_bytes += joined;
+        trace.leaps += overlap.has_stream_leap ? 1 : 0;
+        if (size >= 64_MiB && trace.large_logged < 256) {
+            ++trace.large_logged;
+            LOG_INFO(HW_GPU,
+                     "Buffer trace: created {:#x}+{:#x} ({} MiB) for {:#x}+{:#x} at line {}, joining "
+                     "{} buffers ({} MiB){}",
+                     overlap.begin, size, size >> 20, asked_addr, asked_size, caller.line(),
+                     overlap.ids.size(), joined >> 20, overlap.has_stream_leap ? ", stream leap" : "");
+        }
+    }
     const BufferId new_buffer_id =
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];
