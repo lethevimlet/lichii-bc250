@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -157,6 +159,36 @@ Cause CompileCause(u64 key, u32 core) {
     u8& mask = g_compiled_on[key];
     const bool repeat = (mask & ~bit) != 0;
     mask |= bit;
+    // Once a minute: how much JIT work is the same game code compiled again by another core
+    // (what one code cache shared by all cores would save).
+    {
+        static auto last_report = std::chrono::steady_clock::now();
+        static u64 compiles{}, repeats{};
+        ++compiles;
+        repeats += repeat ? 1 : 0;
+        if (const auto now = std::chrono::steady_clock::now();
+            now - last_report >= std::chrono::seconds{60}) {
+            last_report = now;
+            u64 total{};
+            std::array<u64, 9> by_cores{};
+            for (const auto& [k, m] : g_compiled_on) {
+                const int n = std::popcount(m);
+                total += static_cast<u64>(n);
+                ++by_cores[static_cast<size_t>(n)];
+            }
+            LOG_INFO(Core_ARM,
+                     "JIT sharing: {} game code blocks, {} compiled in all ({:.0f}% repeats of a "
+                     "block another core has); blocks on 1/2/3/4/5/6 cores: {}/{}/{}/{}/{}/{}; last "
+                     "minute {} compiles, {} repeats",
+                     g_compiled_on.size(), total,
+                     total ? 100.0 * static_cast<double>(total - g_compiled_on.size()) /
+                                 static_cast<double>(total)
+                           : 0.0,
+                     by_cores[1], by_cores[2], by_cores[3], by_cores[4], by_cores[5], by_cores[6],
+                     compiles, repeats);
+            compiles = repeats = 0;
+        }
+    }
     if (t_warming) {
         return Cause::WarmCompile;
     }
