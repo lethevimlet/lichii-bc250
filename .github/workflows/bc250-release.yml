@@ -96,10 +96,10 @@ jobs:
             -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_QT=OFF -DYUZU_CMD=ON -DENABLE_WEB_SERVICE=OFF \
-            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF -DYUZU_TESTS=OFF -DBUILD_TESTING=OFF \
+            -DENABLE_QT=OFF -DLICHII_CMD=ON -DENABLE_WEB_SERVICE=OFF \
+            -DLICHII_ROOM=OFF -DLICHII_ROOM_STANDALONE=OFF -DLICHII_TESTS=OFF -DBUILD_TESTING=OFF \
             -DENABLE_WERROR=OFF -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
-            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DLICHII_USE_BUNDLED_SDL3=ON \
             -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DUSE_CCACHE=ON -DENABLE_LTO=OFF \
             "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION" \
