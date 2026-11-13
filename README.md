@@ -23,7 +23,8 @@ carries the BC-250-specific changes on top. GPLv3, like upstream. The repository
 
 **What's new:** see [CHANGELOG.md](CHANGELOG.md). In short, v8 makes open areas like Hyrule
 Field smoother (about 40 % fewer dropped frames) with 14 upstream Lichii speed-ups, without the
-castle-entry regression of the newest upstream builds.
+castle-entry regression of the newest upstream builds. The installer now runs it in a small
+container, which saves about 1.4 GB of RAM on Bazzite.
 
 ## How it plays
 
@@ -185,7 +186,7 @@ It downloads the latest release package from GitHub (built with Lichii's perform
 Ubuntu 24.04), unpacks it to `~/Applications/lichii-bc250/lichii`, and installs the launcher
 `~/Applications/lichii-bc250/lichii-bc250`, which sets the BC-250 tuning, plus the game settings
 `~/Applications/lichii-bc250/oot.ini` (frame generation, the presentation queue, the Xbox 360
-controller mapping, and so on). `--release v7` picks a specific release.
+controller mapping, and so on). `--release v8` picks a specific release.
 
 The emulator runs in a small Fedora 42 container, `lichii-bc250-runtime` (only the GPU driver and
 system libraries, nothing to compile; created in under a minute). Run directly on Bazzite the same

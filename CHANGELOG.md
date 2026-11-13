@@ -16,6 +16,13 @@ every merge into `main`. Entries before v4 are dated only.
   of 5.9-9.0, 17-41 frames over 40 ms per minute instead of 32-65, game 29.3-29.6 fps instead of
   28.3-29.3. **Castle route:** 53.9-55.0 screen fps (v7 52.9-53.5), entry freeze 2.8-2.9 s,
   same GPU memory.
+- **The installer runs the release in a small Fedora 42 container** (`lichii-bc250-runtime`,
+  created in under a minute, only the GPU driver and system libraries). Run directly on Bazzite
+  the same program held about 1.4 GB more memory (title screen 4.1 vs 2.5 GB, Castle Town peak
+  5.5 vs 4.0 GB); a 33-minute session that way filled RAM and swap and locked up the console.
+  `--native` keeps the old behaviour; the uninstaller removes the container too.
+- **New optional setup step 8:** a systemd-oomd safety net that closes the game instead of
+  letting the console lock up if memory ever runs out.
 - **Not taken:** the newest upstream builds as a whole. Merging Lichii build 196 and the 35
   commits after it lengthened the Castle Town entry freeze (6-11 s instead of 2-3 s) and kept
   ~500 MB more GPU memory there; that merge is kept on branch `exp/v8-full-merge` for later.
