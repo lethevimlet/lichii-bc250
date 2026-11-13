@@ -6,6 +6,8 @@
 #   (default)        download the prebuilt package of the latest GitHub release (PGO build, ~100 MB)
 #                    into ~/Applications/lichii-bc250/lichii; nothing is compiled
 #   --release <tag>  download that release instead of the latest (e.g. --release v7)
+#   --native         run the downloaded package directly on the system instead of in the small
+#                    lichii-bc250-runtime container (on Bazzite the native run holds ~1.4 GB more RAM)
 #   --build          compile eden-cli from this checkout in a distrobox container instead (30-60 min)
 #   --pgo            with --build: use LLVM 23 and the bundled Lichii profile (~10% more fps; downloads
 #                    ~2 GB once and keeps ~600 MB of it in ~/.local/share/lichii-bc250/llvm23)
@@ -27,6 +29,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 CONTAINER=lichii-bc250-build
+RUNTIME=lichii-bc250-runtime
 IMAGE=fedora:42
 APP_DIR="$HOME/Applications/lichii-bc250"
 INSTALL_USER="${SUDO_USER:-$USER}"
@@ -34,6 +37,7 @@ INSTALL_USER="${SUDO_USER:-$USER}"
 WITH_SHORTCUT=0
 WITH_PGO=0
 WITH_BUILD=0
+WITH_NATIVE=0
 RELEASE_TAG=""
 GITHUB_REPO=lethevimlet/lichii-bc250
 LLVM_VERSION=23.1.5
@@ -44,9 +48,10 @@ while [ $# -gt 0 ]; do
         --with-shortcut) WITH_SHORTCUT=1 ;;
         --pgo) WITH_PGO=1; WITH_BUILD=1 ;;
         --build) WITH_BUILD=1 ;;
+        --native) WITH_NATIVE=1 ;;
         --release) shift; [ $# -gt 0 ] || { echo "--release needs a tag"; exit 1; }; RELEASE_TAG="$1" ;;
         --game) shift; [ $# -gt 0 ] || { echo "--game needs a path"; exit 1; }; GAME_PATH="$1" ;;
-        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
     shift
@@ -99,6 +104,30 @@ print(r["tag_name"], a[tgz[0]], a.get(tgz[0] + ".sha256", ""))
     # A piped install (curl | bash) has no checkout; the package carries the helper scripts.
     REPO_DIR_TOOLS="$APP_DIR/lichii/tools"
     log "installed $TAG to $APP_DIR/lichii"
+    # The package runs in a small Fedora 42 container by default: on Bazzite (Fedora 44) the same
+    # binary run natively held ~1.4 GB more memory (castle route: 5.5 vs 4.1 GB peak; title screen
+    # 4.1 vs 2.6 GB), which the 16 GB BC-250 pays for in swap and stutter. Only runtime libraries
+    # are installed in it (the GPU driver and the system libraries eden-cli loads), no compilers.
+    if [ "$WITH_NATIVE" = 0 ]; then
+        if ! command -v distrobox >/dev/null; then
+            log "distrobox not found: running natively (install distrobox for the lighter container run)"
+            WITH_NATIVE=1
+        else
+            if ! distrobox list 2>/dev/null | grep -qw "$RUNTIME"; then
+                log "creating the $RUNTIME container (image $IMAGE, runtime libraries only)"
+                distrobox create -n "$RUNTIME" -i "$IMAGE" -Y >/dev/null
+            fi
+            if ! distrobox enter "$RUNTIME" -- test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json; then
+                log "installing the GPU driver and runtime libraries in it (~300 MB)"
+                distrobox enter "$RUNTIME" -- sudo dnf -y install mesa-vulkan-drivers vulkan-loader \
+                    libX11 libX11-xcb libxcb libXext libXrandr libXcursor libXi libXfixes libXrender \
+                    libXScrnSaver libxkbcommon wayland libdecor alsa-lib pulseaudio-libs pipewire-libs \
+                    libusb1 systemd-libs libdrm >/dev/null
+            fi
+            missing=$(distrobox enter "$RUNTIME" -- ldd "$APP_DIR/lichii/usr/bin/eden-cli" | grep "not found" || true)
+            [ -z "$missing" ] || { echo "libraries missing in $RUNTIME:" >&2; echo "$missing" >&2; exit 1; }
+        fi
+    fi
 else
 REPO_DIR_TOOLS="$REPO_DIR/tools/bc250"
 
@@ -179,9 +208,9 @@ cat > "$APP_DIR/lichii-bc250" <<'WRAP'
 # lichii-bc250 launcher: tunes the emulator for the BC-250 iGPU, then runs eden-cli.
 # Usage: lichii-bc250 [-f] -g "<path to your game dump>"
 set -euo pipefail
-CONTAINER=lichii-bc250-build
+CONTAINER="__CONTAINER__"
 EDEN_EXEC="__EDEN_EXEC__"
-INSTALL_MODE="__INSTALL_MODE__"   # release: run the downloaded package; build: run it in the container
+INSTALL_MODE="__INSTALL_MODE__"   # native: run the package directly; anything else: in CONTAINER
 unset LD_PRELOAD
 # The BC-250 iGPU (RADV) with UMA: cap the texture cache so it never tramples
 # the 15 GB of system RAM the game and the compositor also live in. 1.5/2 GB (v6) left
@@ -199,13 +228,17 @@ export EDEN_NX2_PRELOAD_ALL_PIPELINES=0  # cached pipelines build on first sight
 # after large shaders: on a first visit to Hyrule Field the default (all threads) took 3.7 GB at
 # once and froze the game for up to 13 s while the box swapped.
 export EDEN_NX2_PIPELINE_WORKERS=4 EDEN_NX2_PIPELINE_DRIVER_THREADS=2 EDEN_NX2_IR_POOL_CAP_MIB=64
-if [ "$INSTALL_MODE" = release ]; then
+if [ "$INSTALL_MODE" = native ]; then
     exec "$EDEN_EXEC" "$@"
 fi
 exec distrobox enter "$CONTAINER" -- "$EDEN_EXEC" "$@"
 WRAP
-MODE=build; [ "$WITH_BUILD" = 0 ] && MODE=release
-sed -i -e "s|__EDEN_EXEC__|$EDEN_EXEC|" -e "s|__INSTALL_MODE__|$MODE|" "$APP_DIR/lichii-bc250"
+MODE=build; RUN_IN="$CONTAINER"
+if [ "$WITH_BUILD" = 0 ]; then
+    if [ "$WITH_NATIVE" = 1 ]; then MODE=native; else MODE=release; RUN_IN="$RUNTIME"; fi
+fi
+sed -i -e "s|__EDEN_EXEC__|$EDEN_EXEC|" -e "s|__INSTALL_MODE__|$MODE|" -e "s|__CONTAINER__|$RUN_IN|" \
+    "$APP_DIR/lichii-bc250"
 chmod +x "$APP_DIR/lichii-bc250"
 
 if [ ! -f "$APP_DIR/oot.ini" ]; then
