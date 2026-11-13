@@ -1,11 +1,11 @@
 #!/bin/bash
 # lichii-bc250 installer for the AMD BC-250 console (Bazzite).
 #
-# Usage:  ./tools/bc250/bc250-install.sh [--release <tag>] [--build [--pgo]] [--with-shortcut] [--game <path>]
+# Usage:  ./tools/bc250/bc250-install.sh [--release <tag>] [--native] [--build [--pgo]] [--with-shortcut] [--game <path>]
 #
 #   (default)        download the prebuilt package of the latest GitHub release (PGO build, ~100 MB)
 #                    into ~/Applications/lichii-bc250/lichii; nothing is compiled
-#   --release <tag>  download that release instead of the latest (e.g. --release v7)
+#   --release <tag>  download that release instead of the latest (e.g. --release v8)
 #   --native         run the downloaded package directly on the system instead of in the small
 #                    lichii-bc250-runtime container (on Bazzite the native run holds ~1.4 GB more RAM)
 #   --build          compile eden-cli from this checkout in a distrobox container instead (30-60 min)

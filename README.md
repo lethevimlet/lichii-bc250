@@ -191,7 +191,16 @@ controller mapping, and so on). `--release v8` picks a specific release.
 The emulator runs in a small Fedora 42 container, `lichii-bc250-runtime` (only the GPU driver and
 system libraries, nothing to compile; created in under a minute). Run directly on Bazzite the same
 program held about 1.4 GB more memory (title screen 4.1 vs 2.5 GB, Castle Town 5.5 vs 4.0 GB), which
-this 16 GB console pays for with swap freezes in long sessions. `--native` skips the container.
+this 16 GB console pays for with swap freezes in long sessions.
+
+Installer options:
+
+| Option | What it does |
+|---|---|
+| `--release <tag>` | Installs a specific release, for example `--release v8` (default: the latest). |
+| `--native` | Runs the emulator directly on the system instead of in the `lichii-bc250-runtime` container: no container needed, but about 1.4 GB more RAM in use on Bazzite. Also used automatically when `distrobox` is missing. Run the installer again without it to switch back. |
+| `--build [--pgo]` | Compiles the emulator yourself instead of downloading it (see below). |
+| `--with-shortcut --game <path>` | Also adds a Steam shortcut for your dump (step 4). |
 
 **Build it yourself instead** (30-60 minutes the first time, needs `distrobox`):
 
