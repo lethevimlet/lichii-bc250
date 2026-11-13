@@ -2,7 +2,7 @@
   <img src="logo.png" alt="lichii-bc250 logo" width="520">
 </p>
 
-# lichii-bc250 v8
+# lichii-bc250 v8.1
 
 > **Disclaimer: this project does not support or condone piracy.** No game data, keys,
 > firmware or other copyrighted console assets are included, provided or linked here. The
@@ -21,7 +21,9 @@ All emulator credit belongs to the Lichii, Eglantine, Eden and yuzu authors; thi
 carries the BC-250-specific changes on top. GPLv3, like upstream. The repository was called
 `oot-bc250` until 2026-11-11; GitHub redirects the old URL.
 
-**What's new:** see [CHANGELOG.md](CHANGELOG.md). In short, v8 makes open areas like Hyrule
+**What's new:** see [CHANGELOG.md](CHANGELOG.md). v8.1 fixes missing objects and white or
+yellow glowing foliage on systems whose GPU driver refuses some of the game's pipelines (reported
+on CachyOS); if you still see them, open an issue with your `eden_log.txt`. In short, v8 makes open areas like Hyrule
 Field smoother (about 40 % fewer dropped frames) with 14 upstream Lichii speed-ups, without the
 castle-entry regression of the newest upstream builds. The installer now runs it in a small
 container, which saves about 1.4 GB of RAM on Bazzite.

@@ -4,6 +4,26 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v8.1 — 2026-11-13: fix for missing objects and white/yellow foliage
+
+- **Pipelines the GPU driver refuses are now built again instead of being dropped.** Some
+  systems (reported on CachyOS) fail a share of the game's graphics pipelines with
+  `VK_ERROR_FEATURE_NOT_PRESENT`. In v8 such a pipeline drew nothing for the rest of the session:
+  objects went missing, and grass and leaves stayed white or glowing yellow because the pass that
+  colours them never ran. v8.1 retries a refused pipeline without the pipeline cache, then also
+  without the optional extension state, and logs which retry worked.
+- **Better logs for this kind of report:** the log now lists the Vulkan layers installed on the
+  system (overlays, capture and frame-generation tools sit between the emulator and the driver)
+  and, for each refused pipeline, what it asked the driver for. If the problem remains, the
+  `Driver refused a graphics pipeline` lines in `eden_log.txt` say which part is refused.
+- **Checked on the BC-250** with CachyOS's own driver (Mesa 26.2.6 from a CachyOS container) and
+  an empty shader cache. That driver did not refuse any pipeline here, so the retry was tested by
+  forcing every third pipeline to fail first: every one was built on the first retry and Hyrule
+  Field rendered correctly.
+- **Known, harmless:** on a first visit with an empty shader cache, grass can look white for a
+  second or two while its shaders compile in the background; it fixes itself once they're built.
+
+
 ### v8 — 2026-11-13: smoother open areas (14 upstream speed-ups)
 
 - **14 Lichii commits cherry-picked onto v7**, the ones that make the GPU threads and the CPU JIT
