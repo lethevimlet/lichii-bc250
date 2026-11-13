@@ -6,7 +6,7 @@
 #   (default)  removes what bc250-install.sh added for your user:
 #                - the launcher and package in ~/Applications/lichii-bc250
 #                - the "Zelda Ocarina of Time" Steam shortcut it registered (Steam must be stopped)
-#                - the lichii-bc250-build distrobox container and ~/.local/share/lichii-bc250
+#                - the lichii-bc250-build and lichii-bc250-runtime containers and ~/.local/share/lichii-bc250
 #                  (the LLVM download for --pgo builds)
 #                - build/ and build-pgo/ in this checkout
 #   --system   also reverts the README's system tuning steps (asks for sudo):
@@ -132,10 +132,12 @@ if [ -d "$DATA_DIR" ]; then
     log "removing $DATA_DIR"
     rm -rf "$DATA_DIR"
 fi
-if command -v distrobox >/dev/null && distrobox list 2>/dev/null | grep -qw "$CONTAINER"; then
-    log "removing the $CONTAINER container"
-    distrobox rm -f "$CONTAINER" >/dev/null
-fi
+for c in "$CONTAINER" lichii-bc250-runtime; do
+    if command -v distrobox >/dev/null && distrobox list 2>/dev/null | grep -qw "$c"; then
+        log "removing the $c container"
+        distrobox rm -f "$c" >/dev/null
+    fi
+done
 for b in build build-pgo; do
     if [ -f "$REPO_DIR/$b/CMakeCache.txt" ]; then
         log "removing $REPO_DIR/$b"
