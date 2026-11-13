@@ -117,14 +117,17 @@ print(r["tag_name"], a[tgz[0]], a.get(tgz[0] + ".sha256", ""))
                 log "creating the $RUNTIME container (image $IMAGE, runtime libraries only)"
                 distrobox create -n "$RUNTIME" -i "$IMAGE" -Y >/dev/null
             fi
-            if ! distrobox enter "$RUNTIME" -- test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json; then
-                log "installing the GPU driver and runtime libraries in it (~300 MB)"
-                distrobox enter "$RUNTIME" -- sudo dnf -y install mesa-vulkan-drivers vulkan-loader \
+            # distrobox's own setup already brings the Mesa driver; what the package still needs from
+            # the system is whatever ldd reports missing.
+            missing=$(distrobox enter "$RUNTIME" -- ldd "$APP_DIR/lichii/usr/bin/eden-cli" | grep "not found" || true)
+            if [ -n "$missing" ] || ! distrobox enter "$RUNTIME" -- test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json; then
+                log "installing the GPU driver and runtime libraries in it"
+                distrobox enter "$RUNTIME" -- sudo dnf -y install --skip-unavailable mesa-vulkan-drivers vulkan-loader \
                     libX11 libX11-xcb libxcb libXext libXrandr libXcursor libXi libXfixes libXrender \
                     libXScrnSaver libxkbcommon wayland libdecor alsa-lib pulseaudio-libs pipewire-libs \
-                    libusb1 systemd-libs libdrm >/dev/null
+                    libusb1 systemd-libs libdrm harfbuzz fribidi fontconfig freetype >/dev/null
+                missing=$(distrobox enter "$RUNTIME" -- ldd "$APP_DIR/lichii/usr/bin/eden-cli" | grep "not found" || true)
             fi
-            missing=$(distrobox enter "$RUNTIME" -- ldd "$APP_DIR/lichii/usr/bin/eden-cli" | grep "not found" || true)
             [ -z "$missing" ] || { echo "libraries missing in $RUNTIME:" >&2; echo "$missing" >&2; exit 1; }
         fi
     fi

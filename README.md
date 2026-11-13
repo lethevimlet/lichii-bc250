@@ -146,6 +146,22 @@ and survive its updates.
 
    **Check:** `nproc` shows `16` with all 8 cores.
 
+8. **Optional: a safety net against total freezes.** If a very long session still runs out of
+   memory, Linux keeps swapping instead of closing anything, and the console can stop responding
+   until it is powered off. systemd-oomd (already running on Bazzite) can close the game instead
+   once memory pressure stays above 80% for 20 s; normal play, even with heavy swapping, stays far
+   below that:
+
+   ```sh
+   printf '[Service]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=80%%\nManagedOOMMemoryPressureDurationSec=20s\n' > /tmp/oomd.conf
+   sudo mkdir -p /etc/systemd/system/user@.service.d
+   sudo install -m 644 /tmp/oomd.conf /etc/systemd/system/user@.service.d/99-bc250-oomd.conf
+   sudo systemctl daemon-reload
+   ```
+
+   **Check:** `oomctl` lists `/user.slice/user-1000.slice/user@1000.service` under "Memory Pressure
+   Monitored CGroups".
+
 ### Step 2: put your keys and firmware in place
 
 Dump them from your own console, then copy them where the emulator expects them:
@@ -166,11 +182,15 @@ cd lichii-bc250
 ```
 
 It downloads the latest release package from GitHub (built with Lichii's performance profile on
-Ubuntu 24.04; it runs on Bazzite and CachyOS and uses the system's own GPU driver), unpacks it
-to `~/Applications/lichii-bc250/lichii`, and installs the launcher
+Ubuntu 24.04), unpacks it to `~/Applications/lichii-bc250/lichii`, and installs the launcher
 `~/Applications/lichii-bc250/lichii-bc250`, which sets the BC-250 tuning, plus the game settings
 `~/Applications/lichii-bc250/oot.ini` (frame generation, the presentation queue, the Xbox 360
 controller mapping, and so on). `--release v7` picks a specific release.
+
+The emulator runs in a small Fedora 42 container, `lichii-bc250-runtime` (only the GPU driver and
+system libraries, nothing to compile; created in under a minute). Run directly on Bazzite the same
+program held about 1.4 GB more memory (title screen 4.1 vs 2.5 GB, Castle Town 5.5 vs 4.0 GB), which
+this 16 GB console pays for with swap freezes in long sessions. `--native` skips the container.
 
 **Build it yourself instead** (30-60 minutes the first time, needs `distrobox`):
 
@@ -231,7 +251,7 @@ generation settings up to date. A Steam shortcut made earlier keeps working.
 ## Uninstalling
 
 ```sh
-./tools/bc250/bc250-uninstall.sh            # launcher, package, Steam shortcut, build container
+./tools/bc250/bc250-uninstall.sh            # launcher, package, Steam shortcut, containers
 ./tools/bc250/bc250-uninstall.sh --system   # also reverts the sysctl and zram steps (sudo)
 ```
 
