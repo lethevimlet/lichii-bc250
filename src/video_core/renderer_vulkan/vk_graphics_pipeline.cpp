@@ -676,9 +676,19 @@ GraphicsPipeline::GraphicsPipeline(
         // Nothing reads the shader modules once the pipeline exists, and the driver keeps a copy
         // of each one's SPIR-V while it lives (title 1: ~1,500 pipelines, 2-5 modules each).
         // Its SPIR-V is kept compressed (about a tenth of it), so that an evicted pipeline is
-        // built again without translating its shaders.
+        // built again without translating its shaders. BC-250: only with EDEN_NX2_KEEP_SPIRV=1.
+        // On a 16 GB console few pipelines are ever evicted, and OoT's ~7,600 pipelines kept
+        // ~310 MiB of compressed SPIR-V for that (heaptrack, castle route).
+        static const bool keep_spirv = [] {
+            const char* value = std::getenv("EDEN_NX2_KEEP_SPIRV");
+            return value != nullptr && value[0] == '1';
+        }();
         for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
             spv_modules[stage].reset();
+            if (!keep_spirv) {
+                spirv[stage] = std::vector<u32>{};
+                continue;
+            }
             if (!spirv[stage].empty()) {
                 kept_spirv[stage] = Common::Compression::CompressDataZSTD(
                     reinterpret_cast<const u8*>(spirv[stage].data()),

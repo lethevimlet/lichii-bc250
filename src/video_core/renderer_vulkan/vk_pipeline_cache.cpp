@@ -2375,8 +2375,11 @@ void PipelineCache::EvictUnusedPipelines() {
         }
         evicted_pointer_slots.Remember(it->first.Hash(), it->second->MappedPointers());
         KeptGraphicsStages kept = it->second->TakeKeptStages();
-        const u64 bytes = kept.Bytes();
-        kept_stages.Add(it->first, std::move(kept), bytes);
+        // Without EDEN_NX2_KEEP_SPIRV there is no SPIR-V to build from: translate it again.
+        if (std::ranges::any_of(kept.spirv, [](const auto& stage) { return !stage.empty(); })) {
+            const u64 bytes = kept.Bytes();
+            kept_stages.Add(it->first, std::move(kept), bytes);
+        }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         graphics_cache.erase(it);
     }
