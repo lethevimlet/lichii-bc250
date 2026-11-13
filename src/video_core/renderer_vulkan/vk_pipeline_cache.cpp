@@ -862,13 +862,24 @@ constexpr u64 EvictAfterFrames = 9000;
 /// Built graphics pipelines kept before unused ones are destroyed (KeptPipelinesForMemory). 0 on
 /// Android, where driver memory is short: every pipeline unused for EvictAfterFrames is destroyed
 /// there, except up to MaxUnusedPrebuiltPipelines prebuilt ones no draw has used.
+///
+/// EDEN_NX2_KEPT_PIPELINES=<n> overrides it (0 = destroy every pipeline unused for
+/// EvictAfterFrames, as on Android). On the 16 GB BC-250 the default (a quarter of RAM, ~13,000)
+/// let built pipelines and the driver's data for them grow without bound over a long session.
 size_t KeptPipelines() {
+    static const size_t kept = [] {
+        if (const char* value = std::getenv("EDEN_NX2_KEPT_PIPELINES"); value != nullptr) {
+            const size_t configured = static_cast<size_t>(std::strtoull(value, nullptr, 10));
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_KEPT_PIPELINES: {} built pipelines kept", configured);
+            return configured;
+        }
 #ifdef __ANDROID__
-    return 0;
+        return size_t{0};
 #else
-    static const size_t kept = KeptPipelinesForMemory(Common::GetMemInfo().TotalPhysicalMemory);
-    return kept;
+        return KeptPipelinesForMemory(Common::GetMemInfo().TotalPhysicalMemory);
 #endif
+    }();
+    return kept;
 }
 } // Anonymous namespace
 
@@ -2292,6 +2303,17 @@ void PipelineCache::TickFrame() {
 }
 
 void PipelineCache::EvictUnusedPipelines() {
+    if (const size_t built = static_cast<size_t>(
+            std::ranges::count_if(graphics_cache, [](const auto& entry) {
+                return entry.second != nullptr && entry.second->IsBuilt();
+            }));
+        built != last_logged_built) {
+        last_logged_built = built;
+        LOG_INFO(Render_Vulkan,
+                 "Built graphics pipelines: {} (kept up to {}), {} evicted kept for a rebuild "
+                 "({} KiB)",
+                 built, KeptPipelines(), kept_stages.Size(), kept_stages.Bytes() >> 10);
+    }
     // Building a pipeline again on MoltenVK means a Metal compile mid-game, far dearer than the
     // rebuild cost below, so none are evicted there.
     if (device.IsMoltenVK() || frame_count <= EvictAfterFrames) {
@@ -2353,8 +2375,11 @@ void PipelineCache::EvictUnusedPipelines() {
         }
         evicted_pointer_slots.Remember(it->first.Hash(), it->second->MappedPointers());
         KeptGraphicsStages kept = it->second->TakeKeptStages();
-        const u64 bytes = kept.Bytes();
-        kept_stages.Add(it->first, std::move(kept), bytes);
+        // Without EDEN_NX2_KEEP_SPIRV there is no SPIR-V to build from: translate it again.
+        if (std::ranges::any_of(kept.spirv, [](const auto& stage) { return !stage.empty(); })) {
+            const u64 bytes = kept.Bytes();
+            kept_stages.Add(it->first, std::move(kept), bytes);
+        }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         graphics_cache.erase(it);
     }
