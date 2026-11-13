@@ -862,13 +862,24 @@ constexpr u64 EvictAfterFrames = 9000;
 /// Built graphics pipelines kept before unused ones are destroyed (KeptPipelinesForMemory). 0 on
 /// Android, where driver memory is short: every pipeline unused for EvictAfterFrames is destroyed
 /// there, except up to MaxUnusedPrebuiltPipelines prebuilt ones no draw has used.
+///
+/// EDEN_NX2_KEPT_PIPELINES=<n> overrides it (0 = destroy every pipeline unused for
+/// EvictAfterFrames, as on Android). On the 16 GB BC-250 the default (a quarter of RAM, ~13,000)
+/// let built pipelines and the driver's data for them grow without bound over a long session.
 size_t KeptPipelines() {
+    static const size_t kept = [] {
+        if (const char* value = std::getenv("EDEN_NX2_KEPT_PIPELINES"); value != nullptr) {
+            const size_t configured = static_cast<size_t>(std::strtoull(value, nullptr, 10));
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_KEPT_PIPELINES: {} built pipelines kept", configured);
+            return configured;
+        }
 #ifdef __ANDROID__
-    return 0;
+        return size_t{0};
 #else
-    static const size_t kept = KeptPipelinesForMemory(Common::GetMemInfo().TotalPhysicalMemory);
-    return kept;
+        return KeptPipelinesForMemory(Common::GetMemInfo().TotalPhysicalMemory);
 #endif
+    }();
+    return kept;
 }
 } // Anonymous namespace
 
