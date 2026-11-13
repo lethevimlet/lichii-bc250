@@ -2303,6 +2303,17 @@ void PipelineCache::TickFrame() {
 }
 
 void PipelineCache::EvictUnusedPipelines() {
+    if (const size_t built = static_cast<size_t>(
+            std::ranges::count_if(graphics_cache, [](const auto& entry) {
+                return entry.second != nullptr && entry.second->IsBuilt();
+            }));
+        built != last_logged_built) {
+        last_logged_built = built;
+        LOG_INFO(Render_Vulkan,
+                 "Built graphics pipelines: {} (kept up to {}), {} evicted kept for a rebuild "
+                 "({} KiB)",
+                 built, KeptPipelines(), kept_stages.Size(), kept_stages.Bytes() >> 10);
+    }
     // Building a pipeline again on MoltenVK means a Metal compile mid-game, far dearer than the
     // rebuild cost below, so none are evicted there.
     if (device.IsMoltenVK() || frame_count <= EvictAfterFrames) {
