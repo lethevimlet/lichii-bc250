@@ -370,6 +370,99 @@ void ReportTextureMemo() {
                  hits, misses, g_memo_mismatches.load(std::memory_order_relaxed));
     }
 }
+
+/// The sTypes of a pNext chain, for the failure log
+std::string ChainTypes(const void* next) {
+    std::string types;
+    for (auto* item = static_cast<const VkBaseInStructure*>(next); item != nullptr;
+         item = item->pNext) {
+        types += fmt::format("{}{}", types.empty() ? "" : ",", static_cast<int>(item->sType));
+    }
+    return types.empty() ? "-" : types;
+}
+
+std::atomic<u32> g_failed_pipeline_logs{};
+std::atomic<u32> g_retry_logs{};
+
+/// Logs what a graphics pipeline that the driver refused asked for (first 16 failures)
+void LogFailedGraphicsPipeline(VkResult result, const VkGraphicsPipelineCreateInfo& ci,
+                               std::span<const VkDynamicState> dynamic_states) {
+    if (g_failed_pipeline_logs.fetch_add(1, std::memory_order_relaxed) >= 16) {
+        return;
+    }
+    std::string stages;
+    for (u32 index = 0; index < ci.stageCount; ++index) {
+        const VkPipelineShaderStageCreateInfo& stage = ci.pStages[index];
+        stages += fmt::format("{}{:#x}[{}]", stages.empty() ? "" : " ",
+                              static_cast<u32>(stage.stage), ChainTypes(stage.pNext));
+    }
+    std::string dynamic;
+    for (const VkDynamicState state : dynamic_states) {
+        dynamic += fmt::format("{}{}", dynamic.empty() ? "" : ",", static_cast<int>(state));
+    }
+    const auto* input_assembly = ci.pInputAssemblyState;
+    LOG_ERROR(Render_Vulkan,
+              "Driver refused a graphics pipeline ({}): flags {:#x}, stages {}, topology {}, "
+              "viewport chain {}, rasterization chain {}, multisample samples {}, color "
+              "attachments {}, dynamic states {}",
+              vk::Exception(result).what(), static_cast<u32>(ci.flags), stages,
+              input_assembly ? static_cast<int>(input_assembly->topology) : -1,
+              ChainTypes(ci.pViewportState ? ci.pViewportState->pNext : nullptr),
+              ChainTypes(ci.pRasterizationState ? ci.pRasterizationState->pNext : nullptr),
+              ci.pMultisampleState ? static_cast<int>(ci.pMultisampleState->rasterizationSamples)
+                                   : 0,
+              ci.pColorBlendState ? ci.pColorBlendState->attachmentCount : 0, dynamic);
+}
+
+/// Builds a pipeline the driver refused again: first without the pipeline cache and the
+/// pipeline-binary path, then also without the optional extension structures (stage subgroup
+/// size, depth clip control, line, conservative and provoking-vertex state) and debug flags. A
+/// pipeline that draws slightly differently beats one that never draws. Rethrows the first
+/// failure when neither works.
+vk::Pipeline RetryGraphicsPipeline(const Device& device, const VkGraphicsPipelineCreateInfo& ci,
+                                   const vk::Exception& first_failure) {
+    const auto log_success = [](const char* what) {
+        if (g_retry_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_WARNING(Render_Vulkan, "Graphics pipeline built on retry {}", what);
+        }
+    };
+    try {
+        vk::Pipeline result = device.GetLogical().CreateGraphicsPipeline(ci, VK_NULL_HANDLE);
+        log_success("without the pipeline cache");
+        return result;
+    } catch (const vk::Exception&) {
+    }
+    boost::container::static_vector<VkPipelineShaderStageCreateInfo, 8> stages(
+        ci.pStages, ci.pStages + ci.stageCount);
+    for (VkPipelineShaderStageCreateInfo& stage : stages) {
+        stage.pNext = nullptr;
+    }
+    VkGraphicsPipelineCreateInfo plain{ci};
+    plain.flags &= ~VkPipelineCreateFlags{VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR};
+    plain.pStages = stages.data();
+    VkPipelineViewportStateCreateInfo viewport{};
+    if (ci.pViewportState) {
+        viewport = *ci.pViewportState;
+        viewport.pNext = nullptr;
+        plain.pViewportState = &viewport;
+    }
+    VkPipelineRasterizationStateCreateInfo rasterization{};
+    if (ci.pRasterizationState) {
+        rasterization = *ci.pRasterizationState;
+        rasterization.pNext = nullptr;
+        plain.pRasterizationState = &rasterization;
+    }
+    try {
+        vk::Pipeline result = device.GetLogical().CreateGraphicsPipeline(plain, VK_NULL_HANDLE);
+        log_success("without optional extension state");
+        return result;
+    } catch (const vk::Exception& exception) {
+        if (g_retry_logs.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_ERROR(Render_Vulkan, "Graphics pipeline retry failed too: {}", exception.what());
+        }
+    }
+    throw first_failure;
+}
 } // Anonymous namespace
 
 std::chrono::nanoseconds GraphicsPipeline::TakeHoldTime() noexcept {
@@ -2254,9 +2347,33 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .basePipelineHandle = nullptr,
         .basePipelineIndex = 0,
     };
-    pipeline = binaries ? binaries->CreateGraphicsPipeline(pipeline_ci, *pipeline_cache,
-                                                           GraphicsRecordKey(key))
-                        : device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
+    try {
+        // EDEN_NX2_TEST_PIPELINE_FAILURE=N: the first attempt of every Nth pipeline fails the
+        // way reported systems fail, to exercise the retry below.
+        static const u32 test_failure_every = [] {
+            const char* value = std::getenv("EDEN_NX2_TEST_PIPELINE_FAILURE");
+            return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
+        }();
+        static std::atomic<u32> test_failure_count{};
+        if (test_failure_every != 0 &&
+            test_failure_count.fetch_add(1, std::memory_order_relaxed) % test_failure_every == 0) {
+            throw vk::Exception(VK_ERROR_FEATURE_NOT_PRESENT);
+        }
+        pipeline = binaries ? binaries->CreateGraphicsPipeline(pipeline_ci, *pipeline_cache,
+                                                               GraphicsRecordKey(key))
+                            : device.GetLogical().CreateGraphicsPipeline(pipeline_ci,
+                                                                         *pipeline_cache);
+    } catch (const vk::Exception& exception) {
+        // v8.1: some systems (reported on CachyOS) fail a share of Ocarina's pipelines with
+        // VK_ERROR_FEATURE_NOT_PRESENT, which RADV itself never returns for pipeline creation. A
+        // pipeline that fails draws nothing for the rest of the session: missing objects, and
+        // foliage left white because its colour pass never draws. Log what was asked for, then
+        // retry without the optional parts, so the object still draws.
+        LogFailedGraphicsPipeline(exception.GetResult(), pipeline_ci,
+                                  std::span<const VkDynamicState>(dynamic_states.data(),
+                                                                  dynamic_states.size()));
+        pipeline = RetryGraphicsPipeline(device, pipeline_ci, exception);
+    }
     TracePipelineBuild("END", "graphics", key.Hash(), key.unique_hashes, unoptimized,
                        std::chrono::duration<double, std::milli>(
                            std::chrono::steady_clock::now() - trace_begin)
