@@ -4,13 +4,22 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
-### v8.1 — 2026-11-13: fix for missing objects and white/yellow foliage
+### v9 — 2026-11-14: about 500 MB less RAM, fix for missing objects and white/yellow foliage
 
+- **About 500 MB less emulator memory** (Castle Town route, end of route: ~3.5 GB of the
+  emulator's own memory instead of ~4.05 GB in v8). Two changes did it, with no change to what is
+  drawn:
+  - built pipelines no longer keep a compressed copy of their shader code (about 310 MB in a long
+    session); set `EDEN_NX2_KEEP_SPIRV=1` to keep it;
+  - each shader's bookkeeping record is about 70 % smaller (its storage-buffer list was a fixed
+    64-entry array; Ocarina's shaders use at most a handful), about 200 MB over ~3,800 pipelines.
+  Less memory used means the 11 GB compressed swap fills later, so the 1-4 s pauses that start
+  when it spills to the disk swapfile in long sessions come later or not at all.
 - **Pipelines the GPU driver refuses are now built again instead of being dropped.** Some
   systems (reported on CachyOS) fail a share of the game's graphics pipelines with
   `VK_ERROR_FEATURE_NOT_PRESENT`. In v8 such a pipeline drew nothing for the rest of the session:
   objects went missing, and grass and leaves stayed white or glowing yellow because the pass that
-  colours them never ran. v8.1 retries a refused pipeline without the pipeline cache, then also
+  colours them never ran. v9 retries a refused pipeline without the pipeline cache, then also
   without the optional extension state, and logs which retry worked.
 - **Better logs for this kind of report:** the log now lists the Vulkan layers installed on the
   system (overlays, capture and frame-generation tools sit between the emulator and the driver)
@@ -19,9 +28,14 @@ every merge into `main`. Entries before v4 are dated only.
 - **Checked on the BC-250** with CachyOS's own driver (Mesa 26.2.6 from a CachyOS container) and
   an empty shader cache. That driver did not refuse any pipeline here, so the retry was tested by
   forcing every third pipeline to fail first: every one was built on the first retry and Hyrule
-  Field rendered correctly.
-- **Known, harmless:** on a first visit with an empty shader cache, grass can look white for a
-  second or two while its shaders compile in the background; it fixes itself once they're built.
+  Field rendered correctly. Castle route: 53.7 screen fps, same as v8 within run-to-run noise.
+- **Known, same as v8:** with an empty shader cache (first start, or after deleting it) the
+  scene can look washed out or white for up to ~40 s after loading, and new areas can show white
+  leaves for a few seconds, while their shaders compile in the background. It goes away once
+  they're built and doesn't come back on later starts.
+- New diagnostics: `EDEN_NX2_KEPT_PIPELINES` (how many built pipelines stay alive), a "Built
+  graphics pipelines" log line, `EDEN_NX2_TEST_PIPELINE_FAILURE=N` (fails every Nth pipeline's
+  first attempt, to test the retry).
 
 
 ### v8 — 2026-11-13: smoother open areas (14 upstream speed-ups)
