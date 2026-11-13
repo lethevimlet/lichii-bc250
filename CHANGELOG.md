@@ -4,6 +4,23 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v8 — 2026-11-13: smoother open areas (14 upstream speed-ups)
+
+- **14 Lichii commits cherry-picked onto v7**, the ones that make the GPU threads and the CPU JIT
+  cheaper: cheaper reports and fences (#1515, #1516), page protection outside the cache lock
+  (#1518), reused command-list copies (#1520), more fast draws (#1519, #1521), list-fed macro
+  calls without waiting (#1486), back-thread micro-cuts (#1586), 3D state writes sent as
+  register blocks (#1585), faster JIT register allocation and x86-64 code generation (#1517,
+  #1531, #1570), plus the two follow-up fixes (#1591, #1592).
+- **Hyrule Field** (first 3 minutes, 3 runs each against v7): 3.4-5.5 repeated frames/s instead
+  of 5.9-9.0, 17-41 frames over 40 ms per minute instead of 32-65, game 29.3-29.6 fps instead of
+  28.3-29.3. **Castle route:** 53.9-55.0 screen fps (v7 52.9-53.5), entry freeze 2.8-2.9 s,
+  same GPU memory.
+- **Not taken:** the newest upstream builds as a whole. Merging Lichii build 196 and the 35
+  commits after it lengthened the Castle Town entry freeze (6-11 s instead of 2-3 s) and kept
+  ~500 MB more GPU memory there; that merge is kept on branch `exp/v8-full-merge` for later.
+
+
 ### v7 — 2026-11-12: shorter freezes in big areas, prebuilt releases
 
 - **Prebuilt releases.** Pushing a `v*` tag builds the PGO emulator on GitHub (Ubuntu 24.04,
