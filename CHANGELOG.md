@@ -4,6 +4,31 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v10 — 2026-11-14: fixes for missing foliage on some drivers and for controllers outside Steam
+
+- **Missing or white/yellow foliage and props, for real this time.** The v9 logs from an affected
+  CachyOS system showed what the driver refuses: pipelines with **mesh shaders**. Stock RADV offers
+  no mesh shaders on the BC-250 (GFX1013), so every BC-250 this fork is tuned on draws Ocarina's
+  task/mesh programs through the emulator's compute fallback. That CachyOS driver build does offer
+  `VK_EXT_mesh_shader` there, then refuses every mesh pipeline (`VK_ERROR_FEATURE_NOT_PRESENT`),
+  so the grass, leaves and props drawn that way never appeared. On a BC-250 the emulator now always
+  uses the fallback (`EDEN_NX2_ALLOW_NATIVE_MESH=1` keeps the driver's mesh shaders).
+  **On v9 the same fix is one variable:** `EDEN_NX2_FORCE_MESH_FALLBACK=1`.
+- **Controllers that aren't Steam's virtual pad now work.** The installer binds player 1 to
+  Steam Input's virtual pad, which every controller becomes when the game starts from Steam with
+  Steam Input on. Started any other way (Desktop Mode, a terminal, Steam Input off), a pad shows up
+  under its own identity and nothing was bound to it: no input at all (reported with a Bluetooth
+  8BitDo after a switch to Bazzite). When the bound controller isn't connected, the first other
+  gamepad now stands in for it, read through SDL's standard gamepad layout, so buttons, sticks and
+  triggers land in the right place on any pad. It works for a pad connected before or after the
+  game starts. Tested on the BC-250 with a virtual Bluetooth pad and Steam's pad hidden: before
+  the fix the title screen ignored it, with it the pad went through the menus into the game.
+- **Logs for input reports:** at start the log lists every gamepad the system has, with its IDs and
+  whether the emulator can open it (`Gamepad on this system: ...`), names each controller that
+  connects, and says when a pad stands in for the bound one.
+- Castle route 53.8 screen fps, 6.1 repeated frames/s, the same as v9; same log lines.
+
+
 ### v9 — 2026-11-14: about 500 MB less RAM, fix for missing objects and white/yellow foliage
 
 - **About 500 MB less emulator memory** (Castle Town route, end of route: ~3.5 GB of the

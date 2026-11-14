@@ -2,7 +2,7 @@
   <img src="logo.png" alt="lichii-bc250 logo" width="520">
 </p>
 
-# lichii-bc250 v9
+# lichii-bc250 v10
 
 > **Disclaimer: this project does not support or condone piracy.** No game data, keys,
 > firmware or other copyrighted console assets are included, provided or linked here. The
@@ -21,10 +21,9 @@ All emulator credit belongs to the Lichii, Eglantine, Eden and yuzu authors; thi
 carries the BC-250-specific changes on top. GPLv3, like upstream. The repository was called
 `oot-bc250` until 2026-11-11; GitHub redirects the old URL.
 
-**What's new:** see [CHANGELOG.md](CHANGELOG.md). v9 uses about 500 MB less RAM and fixes
-missing objects and white or yellow glowing foliage on systems whose GPU driver refuses some of the
-game's pipelines (reported on CachyOS); if you still see them, open an issue with your
-`eden_log.txt`. v8 made open areas like Hyrule
+**What's new:** see [CHANGELOG.md](CHANGELOG.md). v10 fixes missing or white/yellow foliage on
+systems whose GPU driver offers mesh shaders it then refuses to build (reported on CachyOS), and
+lets any gamepad play when the game isn't started from Steam. v9 cut about 500 MB of RAM. v8 made open areas like Hyrule
 Field smoother (about 40 % fewer dropped frames) with 14 upstream Lichii speed-ups, without the
 castle-entry regression of the newest upstream builds. The installer now runs it in a small
 container, which saves about 1.4 GB of RAM on Bazzite.
@@ -287,9 +286,12 @@ the emulator ignores it.
   smaller and upscaled, which looks soft on a TV; it costs no measurable fps here.
 - **Dynamic FPS add-on** (on): keeps the game at normal speed when the frame rate dips. Without
   it the game runs in slow motion below 30 fps.
-- **Controllers:** the template carries the Xbox 360 receiver mapping. A different pad needs its
-  own `player_0_*` lines in `[Controls]` (or configure it once in a GUI build and copy the
-  block over).
+- **Controllers:** the template binds player 1 to Steam Input's virtual pad, which every controller
+  becomes when the game starts from Steam with Steam Input on. Started any other way (Desktop
+  Mode, a terminal), the first connected gamepad stands in for it through SDL's standard gamepad
+  layout, so any pad works without a mapping. For a custom layout, write your own `player_0_*`
+  lines in `[Controls]`. If a pad isn't seen at all, the `Gamepad on this system:` lines at the top
+  of `eden_log.txt` say whether the emulator can open it.
 - **Shader cache:** `~/.cache/eden/shader/0400486024dec000/` for Ocarina of Time. A cache from
   an earlier run shortens the first boot; it does not change frame rates.
 
