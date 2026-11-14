@@ -222,6 +222,21 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             return false;
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
+        // v9: a GPU-written image the game used recently is coming back. Deleting it means waiting
+        // for the GPU to go idle, reading the whole image back and creating it again moments later:
+        // in a 63-minute Dodongo's Cavern session the cache stayed over its limit, the collector's
+        // 10-frame age took Ocarina's 297 MiB 12288x12288 shadow map four times, and each time
+        // matched a 1-2.5 s freeze. Only real out-of-memory may take it (EDEN_NX2_TC_KEEP_GPU_FRAMES,
+        // default 300 = the normal minimum age; 0 turns this off).
+        static const u64 keep_gpu_frames = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_KEEP_GPU_FRAMES");
+            return value != nullptr ? std::strtoull(value, nullptr, 10) : 300ULL;
+        }();
+        if (must_download && !out_of_memory && keep_gpu_frames != 0 &&
+            frame_tick - image.last_use_frame < keep_gpu_frames) {
+            ++gc_kept_gpu_images;
+            return false;
+        }
         if ((!aggressive_mode && !evict_old_costly && True(image.flags & ImageFlagBits::CostlyLoad)) ||
             (!high_priority_mode && must_download)) {
             return false;
@@ -638,9 +653,9 @@ void TextureCache<P>::TickFrame() {
         if constexpr (requires { runtime.LogMemoryStatistics(); }) {
             runtime.LogMemoryStatistics();
         }
-        LOG_INFO(HW_GPU, "Texture cache last 600 frames: created {} images, deleted {} (collector {}, {} costly, {} downloaded), {} async decodes, ASTC {} opaque / {} alpha",
+        LOG_INFO(HW_GPU, "Texture cache last 600 frames: created {} images, deleted {} (collector {}, {} costly, {} downloaded; {} recent GPU-written kept), {} async decodes, ASTC {} opaque / {} alpha",
                  images_created, images_deleted, gc_deletes + gc_costly_deletes, gc_costly_deletes,
-                 gc_download_deletes,
+                 gc_download_deletes, gc_kept_gpu_images,
                  async_decodes_queued, astc_opaque_images, astc_alpha_images);
         LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} uploads from guest memory, {} MiB (largest {} MiB, {} by layer)",
                  images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
@@ -678,7 +693,7 @@ void TextureCache<P>::TickFrame() {
         created_shapes.clear();
         // The per-image and per-shape tallies only feed debug lines: skip them while those are off.
         debug_stats = Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU, Common::Log::Level::Debug);
-        gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
+        gc_deletes = gc_costly_deletes = gc_download_deletes = gc_kept_gpu_images = async_decodes_queued = 0;
         images_created = images_deleted = 0;
     }
     // An image that could not be made at all: the driver is out of memory whatever the counts
