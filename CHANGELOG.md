@@ -4,6 +4,23 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v11 — not released yet (branch `v11`)
+
+- **Controller settings stay put.** A mapping line written into `oot.ini` without its
+  `<key>\default=false` line was read as "use the default" and, because the emulator rewrites
+  its config on every start, replaced by a keyboard key marked as set: hand-made controller
+  mappings vanished after one launch. Such a line is now used as written. The installer also
+  saves `oot.ini` before every update (`oot.ini.bak-<date>`, last five kept), and the uninstaller
+  keeps it in `~/.config/lichii-bc250/oot.ini` for a reinstall.
+- **The GUI is back in the package.** The release now carries Lichii's Qt window next to
+  `eden-cli`: `lichii-bc250 --gui`, or **Lichii BC-250** in the Desktop Mode menu. A controller
+  mapped there is copied into `oot.ini` on the next game start from the Steam shortcut.
+- Texture cache: images the GPU drew into and used in the last 300 frames are no longer thrown
+  away and rebuilt when the cache is over its limit (the 297 MiB shadow map was rebuilt
+  repeatedly late in long sessions, with 1-2.5 s freezes).
+- Lichii upstream: the Ocarina white-flash fix (revert of #1486), Ocarina FPS-unlock fixes,
+  foliage shadows (points and lines) through the mesh fallback, and an audio gap fix.
+
 ### v10 — 2026-11-14: fixes for missing foliage on some drivers and for controllers outside Steam
 
 - **Missing or white/yellow foliage and props, for real this time.** The v9 logs from an affected

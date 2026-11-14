@@ -258,7 +258,9 @@ git pull
 ```
 
 Your `oot.ini` is kept (controls and your own changes), but the installer brings its frame
-generation settings up to date. A Steam shortcut made earlier keeps working.
+generation settings up to date and saves a copy first (`oot.ini.bak-<date>`, the last five are
+kept). The uninstaller keeps it too (`~/.config/lichii-bc250/oot.ini`), and a reinstall puts it
+back. A Steam shortcut made earlier keeps working.
 
 ## Uninstalling
 
@@ -270,6 +272,22 @@ generation settings up to date. A Steam shortcut made earlier keeps working.
 Close Steam first if you want the shortcut removed (Steam rewrites its shortcut file otherwise).
 Your saves, keys, firmware and shader caches in `~/.local/share/eden` are never touched; the disk
 swapfile and kernel arguments are left in place, and the uninstaller prints how to remove them.
+
+## The GUI
+
+The release package also carries Lichii's normal window (game list, settings, controller
+mapping). In Desktop Mode it is in the application menu as **Lichii BC-250**, or run:
+
+```sh
+~/Applications/lichii-bc250/lichii-bc250 --gui
+```
+
+It uses the same keys, firmware, saves and shader caches as the Steam shortcut. Its own settings
+live in `~/.config/eden/qt-config.ini`; the Steam shortcut keeps using `oot.ini`. One exception:
+**a controller you map in the GUI** (Emulation > Configure > Controls) is copied into `oot.ini`
+the next time the game starts from the shortcut (a copy of the old file is kept as
+`oot.ini.before-gui-controls`). Play from the shortcut for the BC-250 settings (frame
+generation, the texture cache limits and the rest of `oot.ini`).
 
 ## Settings worth knowing
 
@@ -289,8 +307,8 @@ the emulator ignores it.
 - **Controllers:** the template binds player 1 to Steam Input's virtual pad, which every controller
   becomes when the game starts from Steam with Steam Input on. Started any other way (Desktop
   Mode, a terminal), the first connected gamepad stands in for it through SDL's standard gamepad
-  layout, so any pad works without a mapping. For a custom layout, write your own `player_0_*`
-  lines in `[Controls]`. If a pad isn't seen at all, the `Gamepad on this system:` lines at the top
+  layout, so any pad works without a mapping. For a custom layout, map the controller in the GUI
+  (below) or write your own `player_0_*` lines in `[Controls]`. If a pad isn't seen at all, the `Gamepad on this system:` lines at the top
   of `eden_log.txt` say whether the emulator can open it.
 - **Shader cache:** `~/.cache/eden/shader/0400486024dec000/` for Ocarina of Time. A cache from
   an earlier run shortens the first boot; it does not change frame rates.
