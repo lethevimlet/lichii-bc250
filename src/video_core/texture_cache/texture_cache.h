@@ -222,9 +222,10 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             return false;
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
-        // v9: a GPU-written image the game used recently is coming back. Deleting it means waiting
-        // for the GPU to go idle, reading the whole image back and creating it again moments later:
-        // in a 63-minute Dodongo's Cavern session the cache stayed over its limit, the collector's
+        // A GPU-written image (a render target) the game used recently is coming back: deleting it
+        // only means creating it again moments later, with a fresh allocation, its stale guest
+        // bytes uploaded or, when it is downloadable, a full GPU wait and read-back first. In a
+        // 63-minute Dodongo's Cavern session the cache stayed over its limit, the collector's
         // 10-frame age took Ocarina's 297 MiB 12288x12288 shadow map four times, and each time
         // matched a 1-2.5 s freeze. Only real out-of-memory may take it (EDEN_NX2_TC_KEEP_GPU_FRAMES,
         // default 300 = the normal minimum age; 0 turns this off).
@@ -232,7 +233,8 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             const char* value = std::getenv("EDEN_NX2_TC_KEEP_GPU_FRAMES");
             return value != nullptr ? std::strtoull(value, nullptr, 10) : 300ULL;
         }();
-        if (must_download && !out_of_memory && keep_gpu_frames != 0 &&
+        if (True(image.flags & ImageFlagBits::GpuModified) && !out_of_memory &&
+            keep_gpu_frames != 0 &&
             frame_tick - image.last_use_frame < keep_gpu_frames) {
             ++gc_kept_gpu_images;
             return false;
