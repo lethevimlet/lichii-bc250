@@ -2012,6 +2012,20 @@ void Device::RemoveUnsuitableExtensions() {
         LOG_WARNING(Render_Vulkan, "EDEN_NX2_FORCE_MESH_FALLBACK: VK_EXT_mesh_shader disabled");
         extensions.mesh_shader = false;
     }
+    // The BC-250 (RADV GFX1013): stock RADV offers no mesh shaders here, and every BC-250 run this
+    // fork is tuned on draws task/mesh programs through the compute fallback. Some driver builds
+    // (reported on CachyOS) do offer VK_EXT_mesh_shader on it, then refuse every mesh pipeline with
+    // VK_ERROR_FEATURE_NOT_PRESENT: foliage and props drawn with mesh programs went missing or
+    // white for the whole session. Use the fallback there unless EDEN_NX2_ALLOW_NATIVE_MESH=1.
+    if (extensions.mesh_shader && GetDriverID() == VK_DRIVER_ID_MESA_RADV &&
+        GetModelName().find("GFX1013") != std::string_view::npos &&
+        std::getenv("EDEN_NX2_ALLOW_NATIVE_MESH") == nullptr) {
+        LOG_WARNING(Render_Vulkan, "{} offers VK_EXT_mesh_shader, which this GPU's driver refuses "
+                                   "to build with; task/mesh programs use the compute fallback "
+                                   "(EDEN_NX2_ALLOW_NATIVE_MESH=1 keeps the driver's)",
+                    GetModelName());
+        extensions.mesh_shader = false;
+    }
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
 

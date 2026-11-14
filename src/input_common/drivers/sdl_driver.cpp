@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <numbers>
 #include <optional>
 #include "common/logging.h"
@@ -16,6 +18,9 @@
 #include "common/vector_math.h"
 #include "input_common/drivers/sdl_driver.h"
 #include "input_common/helpers/dualsense_haptics.h"
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 namespace InputCommon {
 
@@ -822,6 +827,52 @@ SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_en
         LOG_INFO(Input, "Running in a container: using inotify for controller hotplug");
         SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "SDL_JOYSTICK_DISABLE_UDEV", "1", false);
         SDL_SetHint("SDL_JOYSTICK_DISABLE_UDEV", "1");
+    }
+    // Every gamepad the kernel knows (/sys/class/input/js*), with its IDs and whether its event and
+    // hidraw nodes can be opened from here: a controller the game doesn't see (reported with a
+    // Bluetooth 8BitDo on Bazzite, where the emulator runs in a container) shows why in the log.
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const auto read_line = [](const fs::path& path) {
+            std::ifstream file{path};
+            std::string line;
+            std::getline(file, line);
+            return line;
+        };
+        const auto access_text = [](const std::string& node) {
+            return ::access(node.c_str(), R_OK | W_OK) == 0  ? "read/write"
+                   : ::access(node.c_str(), R_OK) == 0       ? "read only"
+                   : ::access(node.c_str(), F_OK) == 0       ? "NO ACCESS"
+                                                             : "missing here";
+        };
+        size_t count = 0;
+        for (const auto& js : fs::directory_iterator{"/sys/class/input", ec}) {
+            if (js.path().filename().string().rfind("js", 0) != 0) {
+                continue;
+            }
+            const fs::path device = js.path() / "device";
+            std::string nodes;
+            for (const auto& entry : fs::directory_iterator{device, ec}) {
+                const std::string name = entry.path().filename().string();
+                if (name.rfind("event", 0) == 0) {
+                    const std::string node = "/dev/input/" + name;
+                    nodes += fmt::format(" {} {}", node, access_text(node));
+                }
+            }
+            for (const auto& entry : fs::directory_iterator{device / "device" / "hidraw", ec}) {
+                const std::string node = "/dev/" + entry.path().filename().string();
+                nodes += fmt::format(" {} {}", node, access_text(node));
+            }
+            LOG_INFO(Input, "Gamepad on this system: \"{}\" {}:{} bus {}{}",
+                     read_line(device / "name"), read_line(device / "id" / "vendor"),
+                     read_line(device / "id" / "product"), read_line(device / "id" / "bustype"),
+                     nodes);
+            ++count;
+        }
+        if (count == 0) {
+            LOG_INFO(Input, "Gamepad on this system: none found in /sys/class/input");
+        }
     }
 #endif
 
