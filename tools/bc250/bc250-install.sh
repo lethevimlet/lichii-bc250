@@ -101,6 +101,8 @@ print(r["tag_name"], a[tgz[0]], a.get(tgz[0] + ".sha256", ""))
     mv "$tmp/lichii-bc250" "$APP_DIR/lichii"
     rm -rf "$APP_DIR/lichii.old"
     EDEN_EXEC="$APP_DIR/lichii/eden-cli"
+    GUI_EXEC=""
+    [ -x "$APP_DIR/lichii/usr/bin/lichii" ] && GUI_EXEC="$APP_DIR/lichii/usr/bin/lichii"
     # A piped install (curl | bash) has no checkout; the package carries the helper scripts.
     REPO_DIR_TOOLS="$APP_DIR/lichii/tools"
     log "installed $TAG to $APP_DIR/lichii"
@@ -119,14 +121,18 @@ print(r["tag_name"], a[tgz[0]], a.get(tgz[0] + ".sha256", ""))
             fi
             # distrobox's own setup already brings the Mesa driver; what the package still needs from
             # the system is whatever ldd reports missing.
-            missing=$(distrobox enter "$RUNTIME" -- ldd "$APP_DIR/lichii/usr/bin/eden-cli" | grep "not found" || true)
+            # The GUI (lichii) and its Qt platform plugins load a few more system libraries.
+            pkg_bins=$(cd "$APP_DIR/lichii/usr" && ls bin/eden-cli bin/lichii plugins/platforms/*.so plugins/xcbglintegrations/*.so 2>/dev/null | sed "s|^|$APP_DIR/lichii/usr/|" | tr '\n' ' ' || true)
+            missing=$(distrobox enter "$RUNTIME" -- sh -c "for b in $pkg_bins; do ldd \"\$b\"; done" | grep "not found" | sort -u || true)
             if [ -n "$missing" ] || ! distrobox enter "$RUNTIME" -- test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json; then
                 log "installing the GPU driver and runtime libraries in it"
                 distrobox enter "$RUNTIME" -- sudo dnf -y install --skip-unavailable mesa-vulkan-drivers vulkan-loader \
                     libX11 libX11-xcb libxcb libXext libXrandr libXcursor libXi libXfixes libXrender \
                     libXScrnSaver libxkbcommon wayland libdecor alsa-lib pulseaudio-libs pipewire-libs \
-                    libusb1 systemd-libs libdrm harfbuzz fribidi fontconfig freetype >/dev/null
-                missing=$(distrobox enter "$RUNTIME" -- ldd "$APP_DIR/lichii/usr/bin/eden-cli" | grep "not found" || true)
+                    libusb1 systemd-libs libdrm harfbuzz fribidi fontconfig freetype \
+                    xcb-util-cursor xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil \
+                    libxkbcommon-x11 libglvnd-egl libglvnd-opengl mesa-libEGL mesa-libGL dbus-libs >/dev/null
+                missing=$(distrobox enter "$RUNTIME" -- sh -c "for b in $pkg_bins; do ldd \"\$b\"; done" | grep "not found" | sort -u || true)
             fi
             [ -z "$missing" ] || { echo "libraries missing in $RUNTIME:" >&2; echo "$missing" >&2; exit 1; }
         fi
@@ -200,6 +206,7 @@ distrobox enter "$CONTAINER" -- cmake --build "$BUILD_DIR" --target eden-cli --p
 [ -x "$BUILD_DIR/bin/eden-cli" ] || { echo "build failed: no eden-cli" >&2; exit 1; }
 log "built $BUILD_DIR/bin/eden-cli"
 EDEN_EXEC="$BUILD_DIR/bin/eden-cli"
+GUI_EXEC=""   # --build compiles eden-cli only; the GUI comes with the release package
 fi
 
 # --- 3. Wrapper and config ----------------------------------------------------
@@ -209,10 +216,14 @@ mkdir -p "$APP_DIR"
 cat > "$APP_DIR/lichii-bc250" <<'WRAP'
 #!/usr/bin/env bash
 # lichii-bc250 launcher: tunes the emulator for the BC-250 iGPU, then runs eden-cli.
-# Usage: lichii-bc250 [-f] -g "<path to your game dump>"
+# Usage: lichii-bc250 [-f] -c <config.ini> -g "<path to your game dump>"
+#        lichii-bc250 --gui      the Lichii GUI (settings, controller mapping, game list)
+# A controller mapped in the GUI is copied into the -c config before the game starts.
 set -euo pipefail
 CONTAINER="__CONTAINER__"
 EDEN_EXEC="__EDEN_EXEC__"
+GUI_EXEC="__GUI_EXEC__"
+APP_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 INSTALL_MODE="__INSTALL_MODE__"   # native: run the package directly; anything else: in CONTAINER
 unset LD_PRELOAD
 # The BC-250 iGPU (RADV) with UMA: cap the texture cache so it never tramples
@@ -231,6 +242,23 @@ export EDEN_NX2_PRELOAD_ALL_PIPELINES=0  # cached pipelines build on first sight
 # after large shaders: on a first visit to Hyrule Field the default (all threads) took 3.7 GB at
 # once and froze the game for up to 13 s while the box swapped.
 export EDEN_NX2_PIPELINE_WORKERS=4 EDEN_NX2_PIPELINE_DRIVER_THREADS=2 EDEN_NX2_IR_POOL_CAP_MIB=64
+if [ "${1:-}" = --gui ]; then
+    shift
+    if [ -z "$GUI_EXEC" ]; then
+        echo "This install has no GUI (--build compiles eden-cli only); install a release package for it." >&2
+        exit 1
+    fi
+    EDEN_EXEC="$GUI_EXEC"
+else
+    config="" prev=""
+    for arg in "$@"; do
+        [ "$prev" = -c ] && config="$arg"
+        prev="$arg"
+    done
+    if [ -n "$config" ] && [ -f "$APP_DIR/import_gui_controls.py" ] && command -v python3 >/dev/null; then
+        python3 "$APP_DIR/import_gui_controls.py" "$config" || true
+    fi
+fi
 if [ "$INSTALL_MODE" = native ]; then
     exec "$EDEN_EXEC" "$@"
 fi
@@ -240,10 +268,33 @@ MODE=build; RUN_IN="$CONTAINER"
 if [ "$WITH_BUILD" = 0 ]; then
     if [ "$WITH_NATIVE" = 1 ]; then MODE=native; else MODE=release; RUN_IN="$RUNTIME"; fi
 fi
-sed -i -e "s|__EDEN_EXEC__|$EDEN_EXEC|" -e "s|__INSTALL_MODE__|$MODE|" -e "s|__CONTAINER__|$RUN_IN|" \
-    "$APP_DIR/lichii-bc250"
+sed -i -e "s|__EDEN_EXEC__|$EDEN_EXEC|" -e "s|__GUI_EXEC__|${GUI_EXEC:-}|" -e "s|__INSTALL_MODE__|$MODE|" \
+    -e "s|__CONTAINER__|$RUN_IN|" "$APP_DIR/lichii-bc250"
 chmod +x "$APP_DIR/lichii-bc250"
+# (release packages before v11 don't carry the helper; a checkout does)
+for src in "$REPO_DIR_TOOLS/import_gui_controls.py" "$REPO_DIR/tools/bc250/import_gui_controls.py"; do
+    if [ -f "$src" ]; then cp "$src" "$APP_DIR/import_gui_controls.py"; break; fi
+done
 
+# A menu entry for the GUI (Desktop Mode): settings, controller mapping, game list.
+if [ -n "${GUI_EXEC:-}" ]; then
+    mkdir -p "$HOME/.local/share/applications"
+    cat > "$HOME/.local/share/applications/lichii-bc250.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Lichii BC-250
+Comment=Emulator settings and controller mapping (the Steam shortcut uses them)
+Exec=$APP_DIR/lichii-bc250 --gui
+Icon=applications-games
+Categories=Game;Emulator;
+Terminal=false
+DESKTOP
+fi
+
+if [ ! -f "$APP_DIR/oot.ini" ] && [ -f "$HOME/.config/lichii-bc250/oot.ini" ]; then
+    log "restoring your game config (controls) kept by the uninstaller"
+    cp -p "$HOME/.config/lichii-bc250/oot.ini" "$APP_DIR/oot.ini"
+fi
 if [ ! -f "$APP_DIR/oot.ini" ]; then
     log "writing the per-game config template ($APP_DIR/oot.ini)"
     cat > "$APP_DIR/oot.ini" <<'INI'
@@ -1109,7 +1160,11 @@ INI
 else
     # Keep the user's file (controls, their own changes) but bring the tuned frame
     # generation settings up to date: v4 always 2x, v5 a 4-frame presentation queue.
-    log "keeping the existing $APP_DIR/oot.ini; updating its frame generation settings"
+    backup="$APP_DIR/oot.ini.bak-$(date +%Y%m%d-%H%M%S)"
+    cp -p "$APP_DIR/oot.ini" "$backup"
+    ls -1t "$APP_DIR"/oot.ini.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f   # keep the last 5
+    log "keeping the existing $APP_DIR/oot.ini (controls and your own changes; copy in $backup);"
+    log "updating only its frame generation settings"
     for kv in frame_gen=true frame_gen_type=1 frame_gen_multiplier=2 frame_gen_target_rate=0 \
               frame_gen_queue_target=1; do
         key=${kv%%=*}

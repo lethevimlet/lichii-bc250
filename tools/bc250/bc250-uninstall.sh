@@ -124,10 +124,18 @@ else
 fi
 
 # --- Launcher, package, container, downloads, build dirs ----------------------
+if [ -f "$APP_DIR/oot.ini" ]; then
+    # The game config holds the person's controller mapping: keep a copy, which the
+    # installer puts back on a reinstall.
+    mkdir -p "$HOME/.config/lichii-bc250"
+    cp -p "$APP_DIR/oot.ini" "$HOME/.config/lichii-bc250/oot.ini"
+    log "kept your game config (controls) in ~/.config/lichii-bc250/oot.ini; a reinstall uses it"
+fi
 if [ -d "$APP_DIR" ]; then
     log "removing $APP_DIR"
     rm -rf "$APP_DIR"
 fi
+rm -f "$HOME/.local/share/applications/lichii-bc250.desktop"
 if [ -d "$DATA_DIR" ]; then
     log "removing $DATA_DIR"
     rm -rf "$DATA_DIR"
