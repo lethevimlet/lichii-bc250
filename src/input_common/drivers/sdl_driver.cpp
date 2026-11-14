@@ -547,6 +547,9 @@ private:
 
 std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGUID(const Common::UUID& guid, int port) {
     std::scoped_lock lock{joystick_map_mutex};
+    if (bound_guids.insert(guid).second) {
+        standin_dirty = true;
+    }
     const auto it = joystick_map.find(guid);
 
     if (it != joystick_map.end()) {
@@ -733,6 +736,115 @@ void SDLDriver::PumpEvents() {
     }
 }
 
+void SDLDriver::UpdateStandIn() {
+    if (!standin_dirty.exchange(false)) {
+        return;
+    }
+    std::optional<PadIdentifier> target;
+    SDL_JoystickID source = 0;
+    std::string source_name;
+    {
+        std::scoped_lock lock{joystick_map_mutex};
+        // A controller the bindings name with no device connected under its GUID
+        for (const auto& [guid, joysticks] : joystick_map) {
+            if (!bound_guids.contains(guid) || joysticks.empty() ||
+                std::ranges::any_of(joysticks,
+                                    [](const auto& joystick) { return joystick->GetSDLJoystick(); })) {
+                continue;
+            }
+            target = joysticks.front()->GetPadIdentifier();
+            break;
+        }
+        // The first connected gamepad no binding names
+        for (const auto& [guid, joysticks] : joystick_map) {
+            if (!target || source != 0 || bound_guids.contains(guid)) {
+                continue;
+            }
+            for (const auto& joystick : joysticks) {
+                if (joystick->GetSDLJoystick() && joystick->GetSDLGameController()) {
+                    source = SDL_GetJoystickID(joystick->GetSDLJoystick());
+                    source_name = joystick->GetControllerName();
+                    break;
+                }
+            }
+        }
+    }
+    const bool changed = source != standin_source || target != standin_target;
+    if (source == 0) {
+        target.reset();
+    }
+    if (changed) {
+        if (target) {
+            PreSetController(*target);
+            LOG_INFO(Input,
+                     "No connected controller matches the bound one ({}); \"{}\" stands in for "
+                     "it through SDL's gamepad layout",
+                     target->guid.RawString(), source_name);
+        } else if (standin_target) {
+            LOG_INFO(Input, "Stand-in controller released");
+        }
+        standin_hat = 0;
+    }
+    standin_source = source;
+    standin_target = target;
+}
+
+void SDLDriver::HandleStandInEvent(const SDL_Event& event) {
+    UpdateStandIn();
+    if (!standin_target) {
+        return;
+    }
+    const PadIdentifier& target = *standin_target;
+    if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+        if (event.gaxis.which != standin_source) {
+            return;
+        }
+        // The raw axes of the bound layout (Steam Input's virtual pad, an XInput layout)
+        int axis = -1;
+        switch (static_cast<SDL_GamepadAxis>(event.gaxis.axis)) {
+        case SDL_GAMEPAD_AXIS_LEFTX: axis = 0; break;
+        case SDL_GAMEPAD_AXIS_LEFTY: axis = 1; break;
+        case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: axis = 2; break;
+        case SDL_GAMEPAD_AXIS_RIGHTX: axis = 3; break;
+        case SDL_GAMEPAD_AXIS_RIGHTY: axis = 4; break;
+        case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: axis = 5; break;
+        default: return;
+        }
+        SetAxis(target, axis, event.gaxis.value / 32767.0f);
+        return;
+    }
+    if (event.gbutton.which != standin_source) {
+        return;
+    }
+    const bool down = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    u8 hat_bit = 0;
+    int button = -1;
+    switch (static_cast<SDL_GamepadButton>(event.gbutton.button)) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: button = 0; break;
+    case SDL_GAMEPAD_BUTTON_EAST: button = 1; break;
+    case SDL_GAMEPAD_BUTTON_WEST: button = 2; break;
+    case SDL_GAMEPAD_BUTTON_NORTH: button = 3; break;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: button = 4; break;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: button = 5; break;
+    case SDL_GAMEPAD_BUTTON_BACK: button = 6; break;
+    case SDL_GAMEPAD_BUTTON_START: button = 7; break;
+    case SDL_GAMEPAD_BUTTON_GUIDE: button = 8; break;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: button = 9; break;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: button = 10; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: hat_bit = SDL_HAT_UP; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: hat_bit = SDL_HAT_RIGHT; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: hat_bit = SDL_HAT_DOWN; break;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: hat_bit = SDL_HAT_LEFT; break;
+    default: return;
+    }
+    if (hat_bit != 0) {
+        standin_hat = down ? (standin_hat | hat_bit) : (standin_hat & ~hat_bit);
+        SetHatButton(target, 0, standin_hat);
+        return;
+    }
+    SetButton(target, button, down);
+}
+
 void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
     switch (event.type) {
     case SDL_EVENT_JOYSTICK_BUTTON_UP: {
@@ -787,10 +899,20 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
     case SDL_EVENT_JOYSTICK_REMOVED:
         LOG_INFO(Input, "Controller removed with Instance_ID {}", event.jdevice.which);
         CloseJoystick(SDL_GetJoystickFromID(event.jdevice.which));
+        standin_dirty = true;
         break;
     case SDL_EVENT_JOYSTICK_ADDED:
-        LOG_INFO(Input, "Controller connected with device index {}", event.jdevice.which);
+        LOG_INFO(Input, "Controller connected with device index {}: \"{}\"", event.jdevice.which,
+                 SDL_GetJoystickNameForID(event.jdevice.which)
+                     ? SDL_GetJoystickNameForID(event.jdevice.which)
+                     : "?");
         InitJoystick(event.jdevice.which);
+        standin_dirty = true;
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        HandleStandInEvent(event);
         break;
     case SDL_EVENT_AUDIO_DEVICE_REMOVED: {
         if (event.adevice.recording) {
