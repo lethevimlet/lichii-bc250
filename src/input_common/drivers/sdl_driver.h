@@ -129,10 +129,13 @@ private:
     void UpdateStandIn();
     void HandleStandInEvent(const SDL_Event& event);
     std::atomic_bool standin_dirty{true};
-    std::unordered_set<Common::UUID> bound_guids; ///< GUIDs the bindings asked for (joystick_map_mutex)
+    /// Controllers InitJoystick registered for connected devices (joystick_map_mutex): the rest of
+    /// the engine's registered controllers are the ones bindings name
+    std::unordered_set<PadIdentifier> device_presets;
     SDL_JoystickID standin_source{0};
     std::optional<PadIdentifier> standin_target;
     u8 standin_hat{};
+    std::chrono::steady_clock::time_point standin_checked{};
 
     std::atomic<bool> initialized = false;
     bool start_thread;

@@ -547,9 +547,6 @@ private:
 
 std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGUID(const Common::UUID& guid, int port) {
     std::scoped_lock lock{joystick_map_mutex};
-    if (bound_guids.insert(guid).second) {
-        standin_dirty = true;
-    }
     const auto it = joystick_map.find(guid);
 
     if (it != joystick_map.end()) {
@@ -668,6 +665,7 @@ void SDLDriver::InitJoystick(SDL_JoystickID joystick_id) {
     std::scoped_lock lock{joystick_map_mutex};
     if (joystick_map.find(guid) == joystick_map.end()) {
         auto joystick = std::make_shared<SDLJoystick>(guid, 0, sdl_joystick, sdl_gamecontroller);
+        device_presets.insert(joystick->GetPadIdentifier());
         PreSetController(joystick->GetPadIdentifier());
         joystick->EnableMotion();
         SetBattery(joystick->GetPadIdentifier(),
@@ -691,6 +689,7 @@ void SDLDriver::InitJoystick(SDL_JoystickID joystick_id) {
 
     const int port = static_cast<int>(joystick_guid_list.size());
     auto joystick = std::make_shared<SDLJoystick>(guid, port, sdl_joystick, sdl_gamecontroller);
+    device_presets.insert(joystick->GetPadIdentifier());
     PreSetController(joystick->GetPadIdentifier());
     joystick->EnableMotion();
     SetBattery(joystick->GetPadIdentifier(),
@@ -743,21 +742,29 @@ void SDLDriver::UpdateStandIn() {
     std::optional<PadIdentifier> target;
     SDL_JoystickID source = 0;
     std::string source_name;
+    const std::vector<PadIdentifier> registered = GetPresetControllers();
     {
         std::scoped_lock lock{joystick_map_mutex};
-        // A controller the bindings name with no device connected under its GUID
-        for (const auto& [guid, joysticks] : joystick_map) {
-            if (!bound_guids.contains(guid) || joysticks.empty() ||
-                std::ranges::any_of(joysticks,
-                                    [](const auto& joystick) { return joystick->GetSDLJoystick(); })) {
-                continue;
+        const auto is_open = [this](const Common::UUID& guid) {
+            const auto it = joystick_map.find(guid);
+            return it != joystick_map.end() &&
+                   std::ranges::any_of(it->second, [](const auto& joystick) {
+                       return joystick->GetSDLJoystick() != nullptr;
+                   });
+        };
+        // Controllers the bindings name (registered, but not by InitJoystick for a device)
+        std::unordered_set<Common::UUID> bound;
+        for (const PadIdentifier& identifier : registered) {
+            if (!device_presets.contains(identifier)) {
+                bound.insert(identifier.guid);
+                if (!target && !is_open(identifier.guid)) {
+                    target = identifier;
+                }
             }
-            target = joysticks.front()->GetPadIdentifier();
-            break;
         }
         // The first connected gamepad no binding names
         for (const auto& [guid, joysticks] : joystick_map) {
-            if (!target || source != 0 || bound_guids.contains(guid)) {
+            if (!target || source != 0 || bound.contains(guid)) {
                 continue;
             }
             for (const auto& joystick : joysticks) {
@@ -790,6 +797,15 @@ void SDLDriver::UpdateStandIn() {
 }
 
 void SDLDriver::HandleStandInEvent(const SDL_Event& event) {
+    if (!standin_target) {
+        // Bindings can be made after the first event: look again (once a second) while nothing
+        // stands in
+        const auto now = std::chrono::steady_clock::now();
+        if (now - standin_checked >= std::chrono::seconds{1}) {
+            standin_checked = now;
+            standin_dirty = true;
+        }
+    }
     UpdateStandIn();
     if (!standin_target) {
         return;
