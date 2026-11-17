@@ -3610,6 +3610,50 @@ void TextureCache<P>::NoteWholeClears() {
 template <class P>
 ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureCache};
+    // EDEN_NX2_TC_CREATE_STATS=1: time spent in each phase of an image create, every 10 s.
+    static const bool create_stats = std::getenv("EDEN_NX2_TC_CREATE_STATS") != nullptr;
+    struct CreatePhases {
+        u64 count{}, search_ns{}, host_ns{}, join_ns{};
+        std::chrono::steady_clock::time_point last{};
+    };
+    static CreatePhases phases;
+    const auto phase_t0 = create_stats ? std::chrono::steady_clock::now()
+                                       : std::chrono::steady_clock::time_point{};
+    std::chrono::steady_clock::time_point phase_t1{}, phase_t2{};
+    const auto phase_ns = [](auto from, auto to) {
+        return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
+    };
+    struct PhaseEnd {
+        bool on;
+        const std::chrono::steady_clock::time_point& t0;
+        const std::chrono::steady_clock::time_point& t1;
+        const std::chrono::steady_clock::time_point& t2;
+        CreatePhases& totals;
+        decltype(phase_ns)& ns;
+        ~PhaseEnd() {
+            if (!on || t2 == std::chrono::steady_clock::time_point{}) {
+                return;
+            }
+            const auto t3 = std::chrono::steady_clock::now();
+            ++totals.count;
+            totals.search_ns += ns(t0, t1);
+            totals.host_ns += ns(t1, t2);
+            totals.join_ns += ns(t2, t3);
+            if (t3 - totals.last >= std::chrono::seconds{10}) {
+                if (totals.last != std::chrono::steady_clock::time_point{} && totals.count != 0) {
+                    LOG_INFO(HW_GPU,
+                             "Image creates 10 s: {} | per create us: search {:.1f}, host image "
+                             "{:.1f}, joins/register {:.1f} | total ms: {:.1f}",
+                             totals.count, totals.search_ns / 1e3 / totals.count,
+                             totals.host_ns / 1e3 / totals.count,
+                             totals.join_ns / 1e3 / totals.count,
+                             (totals.search_ns + totals.host_ns + totals.join_ns) / 1e6);
+                }
+                totals = CreatePhases{};
+                totals.last = t3;
+            }
+        }
+    } phase_end{create_stats, phase_t0, phase_t1, phase_t2, phases, phase_ns};
     ImageInfo new_info = info;
     const size_t size_bytes = CalculateGuestSizeInBytes(new_info);
     const bool broken_views = runtime.HasBrokenTextureViewFormats();
@@ -3722,7 +3766,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
+    if (create_stats) {
+        phase_t1 = std::chrono::steady_clock::now();
+    }
     const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    if (create_stats) {
+        phase_t2 = std::chrono::steady_clock::now();
+    }
     if constexpr (requires(const Image& image) { image.OutOfMemory(); }) {
         if (slot_images[new_image_id].OutOfMemory()) {
             // Left out of the cache: lookups see no image (a null view) and make it again once
