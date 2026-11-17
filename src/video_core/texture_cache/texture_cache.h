@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "common/protect_tag.h"
+
 #include <algorithm>
 #include <numeric>
 #include <cstdlib>
@@ -410,6 +412,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
 
 template <class P>
 void TextureCache<P>::MarkStale(const ImageBase& image) {
+    const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::TextureStale};
     if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
         False(image.flags & ImageFlagBits::GpuModified) ||
         True(image.flags & (ImageFlagBits::CpuModified | ImageFlagBits::Sparse |
@@ -425,6 +428,7 @@ void TextureCache<P>::MarkStale(const ImageBase& image) {
 
 template <class P>
 void TextureCache<P>::ClearStale(DAddr addr, size_t size) {
+    const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::TextureStale};
     stale_pages.Clear(addr, size, [this](DAddr run_addr, u64 run_size) {
         device_memory.UpdatePagesCachedCount(run_addr, run_size, -1);
     });
@@ -4581,6 +4585,7 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::TrackImage(ImageBase& image, ImageId image_id) {
+    const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::TextureTrack};
     ASSERT(False(image.flags & ImageFlagBits::Tracked));
     image.flags |= ImageFlagBits::Tracked;
     // Marked before the pages trap: a new image is tracked (and uploaded) before RegisterImage
@@ -4614,6 +4619,7 @@ void TextureCache<P>::TrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
+    const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::TextureTrack};
     ASSERT(True(image.flags & ImageFlagBits::Tracked));
     image.flags &= ~ImageFlagBits::Tracked;
     if (False(image.flags & ImageFlagBits::Sparse)) {

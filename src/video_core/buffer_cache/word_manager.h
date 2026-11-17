@@ -16,6 +16,7 @@
 
 #include "video_core/nx2_debug_control.h"
 #include "common/alignment.h"
+#include "common/protect_tag.h"
 #include "common/assert.h"
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -454,6 +455,7 @@ struct WordManager {
                     return;
                 }
             }
+            const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer};
             tracker->UpdatePagesCachedBatch(
                 std::span<const std::pair<VAddr, size_t>>(ranges.data(), ranges.size()), delta);
             ranges.clear();
@@ -482,6 +484,7 @@ struct WordManager {
                       coalesced.front().first);
         }
         // Use batch API to reduce lock acquisitions and contention.
+        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer};
         tracker->UpdatePagesCachedBatch(coalesced, delta);
         ranges.clear();
     }
@@ -507,6 +510,7 @@ struct WordManager {
     void NotifyRasterizer(bool add_to_tracker, u64 word_index, u64 current_bits, u64 new_bits) const {
         u64 changed_bits = (add_to_tracker ? current_bits : ~current_bits) & new_bits;
         VAddr addr = cpu_addr + word_index * BYTES_PER_WORD;
+        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer};
         IteratePages(changed_bits, [&](size_t offset, size_t size) {
             tracker->UpdatePagesCachedCount(addr + offset * BYTES_PER_PAGE, size * BYTES_PER_PAGE, add_to_tracker ? 1 : -1);
         });

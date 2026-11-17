@@ -3,6 +3,7 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/protect_tag.h"
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -453,6 +454,7 @@ void ShaderCache::Register(std::unique_ptr<ShaderInfo> data, VAddr addr, size_t 
 
     storage.push_back(std::move(data));
 
+    const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Shader};
     device_memory.UpdatePagesCachedCount(addr, size, 1);
 }
 
@@ -549,6 +551,7 @@ void ShaderCache::UnmarkMemory(Entry* entry) {
 
     const VAddr addr = entry->addr_start;
     const size_t size = entry->addr_end - addr;
+    const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Shader};
     device_memory.UpdatePagesCachedCount(addr, size, -1);
 }
 

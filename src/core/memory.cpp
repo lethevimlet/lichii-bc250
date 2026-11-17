@@ -44,12 +44,13 @@
 
 #include <atomic>
 #include <chrono>
+#include "common/protect_tag.h"
 namespace {
 // EDEN_NX2_PROTECT_STATS=1: host mprotect calls by site every 10 s (cached/uncached marks, read
 // trap arm / re-protect / disarm).
 struct ProtectStats {
-    std::atomic<u64> calls[5]{};
-    std::atomic<u64> bytes[5]{};
+    std::atomic<u64> calls[5][Common::ProtectTag::Count]{};
+    std::atomic<u64> bytes[5][Common::ProtectTag::Count]{};
     std::atomic<s64> last{0};
 };
 ProtectStats g_protect_stats;
@@ -58,8 +59,9 @@ inline void CountProtect(int site, u64 size) {
     if (!g_protect_stats_on) {
         return;
     }
-    g_protect_stats.calls[site].fetch_add(1, std::memory_order_relaxed);
-    g_protect_stats.bytes[site].fetch_add(size, std::memory_order_relaxed);
+    const int tag = Common::ProtectTag::Current();
+    g_protect_stats.calls[site][tag].fetch_add(1, std::memory_order_relaxed);
+    g_protect_stats.bytes[site][tag].fetch_add(size, std::memory_order_relaxed);
     const s64 now = std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count();
     s64 last = g_protect_stats.last.load(std::memory_order_relaxed);
@@ -68,9 +70,20 @@ inline void CountProtect(int site, u64 size) {
                                               "trap reprotect", "trap disarm"};
         std::string text;
         for (int i = 0; i < 5; ++i) {
-            text += fmt::format(" | {} {} calls {} MiB", names[i],
-                                g_protect_stats.calls[i].exchange(0),
-                                g_protect_stats.bytes[i].exchange(0) >> 20);
+            u64 calls{}, bytes{};
+            std::string by_tag;
+            for (int t = 0; t < Common::ProtectTag::Count; ++t) {
+                const u64 tag_calls = g_protect_stats.calls[i][t].exchange(0);
+                const u64 tag_bytes = g_protect_stats.bytes[i][t].exchange(0);
+                calls += tag_calls;
+                bytes += tag_bytes;
+                if (tag_calls != 0) {
+                    by_tag += fmt::format(" {}:{}/{}MiB", Common::ProtectTag::names[t], tag_calls,
+                                          tag_bytes >> 20);
+                }
+            }
+            text += fmt::format(" | {} {} calls {} MiB{}", names[i], calls, bytes >> 20,
+                                by_tag.empty() ? "" : " (" + by_tag.substr(1) + ")");
         }
         LOG_INFO(HW_Memory, "mprotect 10 s:{}", text);
     }
