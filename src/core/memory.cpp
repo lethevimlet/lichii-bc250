@@ -66,7 +66,7 @@ inline void CountProtect(int site, u64 size, u64 addr = 0) {
         return;
     }
     const int tag = Common::ProtectTag::Current();
-    if (site == 0 && tag == Common::ProtectTag::Buffer && addr != 0) {
+    if (site == 0 && tag >= Common::ProtectTag::Buffer && tag != Common::ProtectTag::Shader && addr != 0) {
         std::scoped_lock lock{g_protect_pages_mutex};
         for (u64 page = addr >> 12; page < (addr + size + 4095) >> 12; ++page) {
             g_protect_pages.insert(page);
@@ -103,8 +103,13 @@ inline void CountProtect(int site, u64 size, u64 addr = 0) {
             for (const u64 page : g_protect_pages) {
                 repeated += g_protect_pages_before.contains(page) ? 1 : 0;
             }
-            text += fmt::format(" | buffer protects: {} distinct pages, {} also in the window before",
-                                g_protect_pages.size(), repeated);
+            using namespace Common::ProtectTag;
+            text += fmt::format(" | buffer protects: {} distinct pages, {} also in the window before"
+                                " | after upload {} pages: GPU-written (never hot) {}, written once "
+                                "(not hot yet) {}, fresh {}",
+                                g_protect_pages.size(), repeated, g_upload_pages.exchange(0),
+                                g_upload_no_hot.exchange(0), g_upload_flipped.exchange(0),
+                                g_upload_fresh.exchange(0));
             g_protect_pages_before = std::move(g_protect_pages);
             g_protect_pages.clear();
         }

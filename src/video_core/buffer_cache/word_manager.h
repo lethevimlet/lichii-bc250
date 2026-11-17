@@ -226,6 +226,7 @@ struct WordManager {
     }
 
     void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size) noexcept {
+        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::BufferState, true};
         const bool hot_pages = HotPagesEnabled();
         if (hot_pages) {
             RefreshHotEpoch();
@@ -291,8 +292,10 @@ struct WordManager {
     /// @param func            Function to call for each turned off region
     template <typename Func>
     void ForEachModifiedRange(Type type, bool clear, VAddr query_cpu_range, s64 size, Func&& func) {
+        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::BufferUpload, true};
         //static_assert(type != Type::Untracked);
         const bool hot_pages = HotPagesEnabled() && clear && type == Type::CPU;
+        static const bool protect_stats = std::getenv("EDEN_NX2_PROTECT_STATS") != nullptr;
         if (hot_pages) {
             RefreshHotEpoch();
         }
@@ -328,6 +331,22 @@ struct WordManager {
                 hot_clean_words[index] |= hot & word;
                 const u64 clear_mask = mask & ~hot;
                 if (type == Type::CPU || type == Type::CachedCPU) {
+                    if (protect_stats) [[unlikely]] {
+                        // Pages this clear write-protects again, and why they were not hot.
+                        const u64 protecting = untracked_words[index] & clear_mask;
+                        using namespace Common::ProtectTag;
+                        g_upload_pages.fetch_add(std::popcount(protecting), std::memory_order_relaxed);
+                        g_upload_no_hot.fetch_add(std::popcount(protecting & Span(Type::NoHot)[index]),
+                                                  std::memory_order_relaxed);
+                        g_upload_flipped.fetch_add(
+                            std::popcount(protecting & Span(Type::Flip)[index] &
+                                          ~Span(Type::NoHot)[index]),
+                            std::memory_order_relaxed);
+                        g_upload_fresh.fetch_add(
+                            std::popcount(protecting & ~Span(Type::Flip)[index] &
+                                          ~Span(Type::NoHot)[index]),
+                            std::memory_order_relaxed);
+                    }
                     CollectChangedRanges(true, index, untracked_words[index], clear_mask, ranges);
                 }
                 state_words[index] &= ~clear_mask;
@@ -455,7 +474,7 @@ struct WordManager {
                     return;
                 }
             }
-            const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer};
+            const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer, true};
             tracker->UpdatePagesCachedBatch(
                 std::span<const std::pair<VAddr, size_t>>(ranges.data(), ranges.size()), delta);
             ranges.clear();
@@ -484,7 +503,7 @@ struct WordManager {
                       coalesced.front().first);
         }
         // Use batch API to reduce lock acquisitions and contention.
-        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer};
+        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer, true};
         tracker->UpdatePagesCachedBatch(coalesced, delta);
         ranges.clear();
     }
@@ -510,7 +529,7 @@ struct WordManager {
     void NotifyRasterizer(bool add_to_tracker, u64 word_index, u64 current_bits, u64 new_bits) const {
         u64 changed_bits = (add_to_tracker ? current_bits : ~current_bits) & new_bits;
         VAddr addr = cpu_addr + word_index * BYTES_PER_WORD;
-        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer};
+        const Common::ProtectTag::Scope protect_tag{Common::ProtectTag::Buffer, true};
         IteratePages(changed_bits, [&](size_t offset, size_t size) {
             tracker->UpdatePagesCachedCount(addr + offset * BYTES_PER_PAGE, size * BYTES_PER_PAGE, add_to_tracker ? 1 : -1);
         });
