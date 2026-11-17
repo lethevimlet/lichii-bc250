@@ -41,6 +41,7 @@ enum class Type {
     Flip,  ///< Pages the CPU modified once, while tracked, since the last reset
     NoHot, ///< Pages the GPU modified: never hot
     HotClean, ///< Hot pages already uploaded this frame
+    NoHotRecent, ///< Pages the GPU modified in this hot epoch (EDEN_NX2_HOT_NOHOT_EXPIRE)
     Max
 };
 
@@ -217,11 +218,25 @@ struct WordManager {
             const char* value = std::getenv("EDEN_NX2_HOT_EPOCH_SHIFT");
             return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 7U;
         }();
+        // EDEN_NX2_HOT_NOHOT_EXPIRE=1: a page the GPU wrote is kept from being hot only while the
+        // GPU keeps writing it (NoHot = written in this epoch or the one before), not for good.
+        static const bool expire_no_hot = [] {
+            const char* value = std::getenv("EDEN_NX2_HOT_NOHOT_EXPIRE");
+            return value != nullptr && value[0] == '1';
+        }();
         const u32 now = frame >> epoch_shift;
         if (now != hot_epoch) {
             hot_epoch = now;
             std::fill_n(heap.data() + size_t(Type::Hot) * num_words, num_words, u64{0});
             std::fill_n(heap.data() + size_t(Type::Flip) * num_words, num_words, u64{0});
+            if (expire_no_hot) {
+                u64* const no_hot = heap.data() + size_t(Type::NoHot) * num_words;
+                u64* const recent = heap.data() + size_t(Type::NoHotRecent) * num_words;
+                for (size_t i = 0; i < num_words; ++i) {
+                    no_hot[i] = recent[i];
+                    recent[i] = 0;
+                }
+            }
         }
     }
 
@@ -254,6 +269,7 @@ struct WordManager {
                     }
                 } else if (type == Type::GPU) {
                     no_hot_words[index] |= mask;
+                    Span(Type::NoHotRecent)[index] |= mask;
                     hot_words[index] &= ~mask;
                     hot_clean_words[index] &= ~mask;
                 }
