@@ -232,16 +232,7 @@ struct ImageRecyclePool {
     std::chrono::steady_clock::time_point last_report{};
 };
 ImageRecyclePool g_image_pool;
-/// EDEN_NX2_IMAGE_RECYCLE_MIN_KIB (default 4096): smallest image kept. Below 4 MiB, images in
-/// pooled memory are kept as well (Ocarina's Castle Town plaza makes ~20 new 256x256 to
-/// 1920x1080 targets a frame; creating each took ~40 us on the GPU back thread).
-u64 MinRecycledImageBytes() {
-    static const u64 bytes = [] {
-        const char* value = std::getenv("EDEN_NX2_IMAGE_RECYCLE_MIN_KIB");
-        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{4096}) << 10;
-    }();
-    return bytes;
-}
+constexpr u64 MinRecycledImageBytes = 4ull << 20;
 
 /// The create info as words, or nullopt when it carries anything but a view format list.
 std::optional<ImageRecyclePool::Key> RecycleKey(const VkImageCreateInfo& ci) {
@@ -501,11 +492,11 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         );
     }
 
-    if (recycle_key && alloc_info.size >= MinRecycledImageBytes() &&
+    if (recycle_key && alloc_info.size >= MinRecycledImageBytes &&
         (alloc_ci.preferredFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
         VmaAllocationInfo2 info2{};
         vmaGetAllocationInfo2(allocator, allocation, &info2);
-        if (info2.dedicatedMemory || MinRecycledImageBytes() < (4ull << 20)) {
+        if (info2.dedicatedMemory) {
             std::scoped_lock lock{g_image_pool.mutex};
             g_image_pool.candidates.emplace(handle,
                                             std::make_pair(std::move(*recycle_key), alloc_info.size));
