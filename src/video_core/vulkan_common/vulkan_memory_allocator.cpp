@@ -214,7 +214,10 @@ namespace {
 struct ImageRecyclePool {
     struct Key {
         std::vector<u32> words;
-        bool operator==(const Key&) const = default;
+        u64 hash{};
+        bool operator==(const Key& other) const {
+            return hash == other.hash && words == other.words;
+        }
     };
     struct Entry {
         Key key;
@@ -222,23 +225,35 @@ struct ImageRecyclePool {
         VmaAllocation allocation;
         u64 size;
     };
+    struct Candidate {
+        Key key;
+        u64 size;
+        bool small;
+    };
     std::mutex mutex;
     u64 cap{};
     u64 held{};
+    u64 small_cap{};
+    u64 small_held{};
     VmaAllocator allocator{};
-    std::unordered_map<VkImage, std::pair<Key, u64>> candidates; ///< Recyclable images in use
-    std::deque<Entry> free;
-    u64 hits{}, kept{}, evicted{};
+    std::unordered_map<VkImage, Candidate> candidates; ///< Recyclable images in use
+    std::deque<Entry> free;       ///< Dedicated images of 4 MiB and more
+    std::deque<Entry> free_small; ///< Smaller images (EDEN_NX2_IMAGE_RECYCLE_SMALL_MIB)
+    u64 hits{}, kept{}, evicted{}, small_hits{};
     std::chrono::steady_clock::time_point last_report{};
 };
 ImageRecyclePool g_image_pool;
-/// EDEN_NX2_IMAGE_RECYCLE_MIN_KIB (default 4096): smallest image kept. Below 4 MiB, images in
-/// pooled memory are kept as well (Ocarina's Castle Town plaza makes ~20 new 256x256 to
-/// 1920x1080 targets a frame; creating each took ~40 us on the GPU back thread).
-u64 MinRecycledImageBytes() {
+constexpr u64 MinRecycledImageBytes = 4ull << 20;
+
+/// EDEN_NX2_IMAGE_RECYCLE_SMALL_MIB (default 0: off): images under 4 MiB kept for reuse, at most
+/// this much. Ocarina's Castle Town plaza moves ~20 targets a frame (256x256 depth to 1920x1080)
+/// and each new image took ~40 us on the GPU back thread. Kept small on purpose: what the pool
+/// holds counts as device memory in use, and a large pool (256 MiB) made the texture cache
+/// collect harder and create more.
+u64 SmallRecycleCap() {
     static const u64 bytes = [] {
-        const char* value = std::getenv("EDEN_NX2_IMAGE_RECYCLE_MIN_KIB");
-        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{4096}) << 10;
+        const char* value = std::getenv("EDEN_NX2_IMAGE_RECYCLE_SMALL_MIB");
+        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{0}) << 20;
     }();
     return bytes;
 }
@@ -267,6 +282,10 @@ std::optional<ImageRecyclePool::Key> RecycleKey(const VkImageCreateInfo& ci) {
             key.words.push_back(static_cast<u32>(list->pViewFormats[i]));
         }
     }
+    key.hash = 14695981039346656037ull;
+    for (const u32 word : key.words) {
+        key.hash = (key.hash ^ word) * 1099511628211ull;
+    }
     return key;
 }
 
@@ -279,14 +298,18 @@ bool RecycleImage(VmaAllocator allocator, VkImage image, VmaAllocation allocatio
         if (it == pool.candidates.end() || allocator != pool.allocator) {
             return false;
         }
-        pool.free.push_back({std::move(it->second.first), image, allocation, it->second.second});
-        pool.held += it->second.second;
+        ImageRecyclePool::Candidate candidate = std::move(it->second);
         pool.candidates.erase(it);
+        auto& list = candidate.small ? pool.free_small : pool.free;
+        u64& held = candidate.small ? pool.small_held : pool.held;
+        const u64 cap = candidate.small ? pool.small_cap : pool.cap;
+        list.push_back({std::move(candidate.key), image, allocation, candidate.size});
+        held += candidate.size;
         ++pool.kept;
-        while (pool.held > pool.cap && !pool.free.empty()) {
-            pool.held -= pool.free.front().size;
-            destroy.push_back(std::move(pool.free.front()));
-            pool.free.pop_front();
+        while (held > cap && !list.empty()) {
+            held -= list.front().size;
+            destroy.push_back(std::move(list.front()));
+            list.pop_front();
             ++pool.evicted;
         }
     }
@@ -325,6 +348,7 @@ MemoryAllocator::MemoryAllocator(const Device &device_)
         std::scoped_lock lock{g_image_pool.mutex};
         if (recycle_cap != 0 && g_image_pool.allocator == nullptr) {
             g_image_pool.cap = recycle_cap;
+            g_image_pool.small_cap = SmallRecycleCap();
             g_image_pool.allocator = allocator;
             vk::g_image_recycler = RecycleImage;
         }
@@ -339,10 +363,16 @@ void ReleaseImageRecyclePool() {
     for (const auto& entry : g_image_pool.free) {
         vmaDestroyImage(g_image_pool.allocator, entry.image, entry.allocation);
     }
+    for (const auto& entry : g_image_pool.free_small) {
+        vmaDestroyImage(g_image_pool.allocator, entry.image, entry.allocation);
+    }
     g_image_pool.free.clear();
+    g_image_pool.free_small.clear();
     g_image_pool.candidates.clear();
     g_image_pool.held = 0;
+    g_image_pool.small_held = 0;
     g_image_pool.cap = 0;
+    g_image_pool.small_cap = 0;
     g_image_pool.allocator = nullptr;
 }
 
@@ -370,19 +400,35 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         if (recycle_key) {
             auto& pool = g_image_pool;
             std::scoped_lock lock{pool.mutex};
-            const auto it = std::ranges::find(pool.free, *recycle_key, &ImageRecyclePool::Entry::key);
-            if (it != pool.free.end()) {
-                const ImageRecyclePool::Entry entry = std::move(*it);
-                pool.free.erase(it);
-                pool.held -= entry.size;
-                pool.candidates.emplace(entry.image, std::make_pair(entry.key, entry.size));
+            // Newest first: the image the texture cache dropped last is the likeliest match.
+            const auto match = [&](const ImageRecyclePool::Entry& entry) {
+                return entry.key == *recycle_key;
+            };
+            bool small = false;
+            auto it = std::find_if(pool.free.rbegin(), pool.free.rend(), match);
+            bool found = it != pool.free.rend();
+            if (!found) {
+                it = std::find_if(pool.free_small.rbegin(), pool.free_small.rend(), match);
+                found = small = it != pool.free_small.rend();
+            }
+            if (found) {
+                auto& list = small ? pool.free_small : pool.free;
+                const auto erase_at = std::next(it).base();
+                const ImageRecyclePool::Entry entry = std::move(*erase_at);
+                list.erase(erase_at);
+                (small ? pool.small_held : pool.held) -= entry.size;
+                pool.candidates.emplace(entry.image,
+                                        ImageRecyclePool::Candidate{entry.key, entry.size, small});
                 ++pool.hits;
+                pool.small_hits += small ? 1 : 0;
                 const auto now = std::chrono::steady_clock::now();
                 if (now - pool.last_report > std::chrono::seconds{30}) {
                     pool.last_report = now;
                     LOG_INFO(Render_Vulkan,
-                             "Image recycling: {} reused, {} kept, {} evicted, {} MiB held",
-                             pool.hits, pool.kept, pool.evicted, pool.held >> 20);
+                             "Image recycling: {} reused ({} small), {} kept, {} evicted, {} MiB "
+                             "held ({} MiB small)",
+                             pool.hits, pool.small_hits, pool.kept, pool.evicted,
+                             (pool.held + pool.small_held) >> 20, pool.small_held >> 20);
                 }
                 image = vk::Image(entry.image, ci.usage, *device.GetLogical(), allocator,
                                   entry.allocation, device.GetDispatchLoader());
@@ -501,14 +547,20 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         );
     }
 
-    if (recycle_key && alloc_info.size >= MinRecycledImageBytes() &&
-        (alloc_ci.preferredFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
-        VmaAllocationInfo2 info2{};
-        vmaGetAllocationInfo2(allocator, allocation, &info2);
-        if (info2.dedicatedMemory || MinRecycledImageBytes() < (4ull << 20)) {
+    if (recycle_key && (alloc_ci.preferredFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+        if (alloc_info.size >= MinRecycledImageBytes) {
+            VmaAllocationInfo2 info2{};
+            vmaGetAllocationInfo2(allocator, allocation, &info2);
+            if (info2.dedicatedMemory) {
+                std::scoped_lock lock{g_image_pool.mutex};
+                g_image_pool.candidates.emplace(
+                    handle,
+                    ImageRecyclePool::Candidate{std::move(*recycle_key), alloc_info.size, false});
+            }
+        } else if (g_image_pool.small_cap != 0) {
             std::scoped_lock lock{g_image_pool.mutex};
-            g_image_pool.candidates.emplace(handle,
-                                            std::make_pair(std::move(*recycle_key), alloc_info.size));
+            g_image_pool.candidates.emplace(
+                handle, ImageRecyclePool::Candidate{std::move(*recycle_key), alloc_info.size, true});
         }
     }
     image = vk::Image(handle, ci.usage, *device.GetLogical(), allocator, allocation,
