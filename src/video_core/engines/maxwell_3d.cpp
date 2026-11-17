@@ -399,19 +399,6 @@ bool Maxwell3D::IsFastDrawVertexBuffer(u32 method) {
     constexpr u32 stream_words = sizeof(Regs::VertexStream) / sizeof(u32);
     if (method >= streams && method < streams + Regs::NumVertexArrays * stream_words) {
         const u32 word = (method - streams) % stream_words;
-        // Word 0 (stride and enable): with dynamic vertex input neither is in the pipeline key, and
-        // the stream's dirty flags make every draw, delta ones included, rebind the buffer with its
-        // stride and record the vertex input again. OoT's Castle Town plaza changes the stride of
-        // streams 0 and 15 before ~11k draws/s, which sent half of its draws down the full path.
-        // EDEN_NX2_FAST_DRAW_STRIDE=0 keeps it a state change.
-        static const bool stride_fast = [] {
-            const char* const value = std::getenv("EDEN_NX2_FAST_DRAW_STRIDE");
-            return value == nullptr || value[0] != '0';
-        }();
-        if (word == 0) {
-            return stride_fast &&
-                   VideoCommon::Nx2FastDraw::g_dynamic_vertex_input.load(std::memory_order_relaxed);
-        }
         return word == 1 || word == 2; // address_high, address_low
     }
     constexpr u32 sizes = 0x600 / sizeof(u32); // SET_VERTEX_STREAM_SIZE_A/B (NativeVertexStreamSize)
