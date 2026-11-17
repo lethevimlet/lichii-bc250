@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <mutex>
+#include <unordered_set>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -55,11 +57,21 @@ struct ProtectStats {
 };
 ProtectStats g_protect_stats;
 const bool g_protect_stats_on = std::getenv("EDEN_NX2_PROTECT_STATS") != nullptr;
-inline void CountProtect(int site, u64 size) {
+// Distinct pages the buffer cache write-protects per window, and how many it protected in the
+// window before too (a ring the game streams through vs. the same pages again and again).
+std::mutex g_protect_pages_mutex;
+std::unordered_set<u64> g_protect_pages, g_protect_pages_before;
+inline void CountProtect(int site, u64 size, u64 addr = 0) {
     if (!g_protect_stats_on) {
         return;
     }
     const int tag = Common::ProtectTag::Current();
+    if (site == 0 && tag == Common::ProtectTag::Buffer && addr != 0) {
+        std::scoped_lock lock{g_protect_pages_mutex};
+        for (u64 page = addr >> 12; page < (addr + size + 4095) >> 12; ++page) {
+            g_protect_pages.insert(page);
+        }
+    }
     g_protect_stats.calls[site][tag].fetch_add(1, std::memory_order_relaxed);
     g_protect_stats.bytes[site][tag].fetch_add(size, std::memory_order_relaxed);
     const s64 now = std::chrono::duration_cast<std::chrono::seconds>(
@@ -84,6 +96,17 @@ inline void CountProtect(int site, u64 size) {
             }
             text += fmt::format(" | {} {} calls {} MiB{}", names[i], calls, bytes >> 20,
                                 by_tag.empty() ? "" : " (" + by_tag.substr(1) + ")");
+        }
+        {
+            std::scoped_lock lock{g_protect_pages_mutex};
+            size_t repeated = 0;
+            for (const u64 page : g_protect_pages) {
+                repeated += g_protect_pages_before.contains(page) ? 1 : 0;
+            }
+            text += fmt::format(" | buffer protects: {} distinct pages, {} also in the window before",
+                                g_protect_pages.size(), repeated);
+            g_protect_pages_before = std::move(g_protect_pages);
+            g_protect_pages.clear();
         }
         LOG_INFO(HW_Memory, "mprotect 10 s:{}", text);
     }
@@ -564,7 +587,7 @@ struct Memory::Impl {
             if (!cached) {
                 perm |= Common::MemoryPermission::Write;
             }
-            CountProtect(cached ? 0 : 1, size);
+            CountProtect(cached ? 0 : 1, size, vaddr);
             host_buffer->Protect(vaddr, size, perm);
             if (cached && perm != Common::MemoryPermission{}) {
                 ProtectArmedPages(vaddr, size);
