@@ -323,7 +323,9 @@ export DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
 # program through ~/.local/share/vulkan/loader_settings.d; inside the emulator it aborts at start
 # ("Failed to create the thread pool Gate thread"). Its own off switch; nothing on other systems.
 export DISABLE_BGFX=1
+gui=0
 if [ "${1:-}" = --gui ]; then
+    gui=1
     shift
     if [ -z "$GUI_EXEC" ]; then
         echo "This install has no GUI (--build compiles eden-cli only); install a release package for it." >&2
@@ -367,10 +369,60 @@ reclaim_helper() {
 if [ "${EDEN_NX2_PRE_RECLAIM_MIB:-1}" != 0 ]; then
     reclaim_helper </dev/null >/dev/null 2>&1 &
 fi
-if [ "$INSTALL_MODE" = native ]; then
-    exec "$EDEN_EXEC" "$@"
+# Memory tuning for the board (swappiness, compaction, the watermark) is set for the game only when
+# the plugin's "during games" switch is on: the values are put back when it ends, so the PS5 side
+# keeps its own. Root writes them; the deck user runs sudo without a password.
+TUNE_PARAMS=(vm.swappiness vm.compaction_proactiveness vm.watermark_scale_factor)
+TUNE_WANT=(10 100 300)
+PROC_SYS="${LICHII_PROC_SYS:-/proc/sys}"
+TUNE_RECORD="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/lichii-bc250-runtime-tune.orig"
+SETTINGS_FILE="${LICHII_SETTINGS:-$HOME/homebrew/settings/Lichii-BC250/settings.json}"
+sysctl_do() { sudo -n sysctl -w "$@" >/dev/null 2>&1; }
+restore_tune() {
+    [ -s "$TUNE_RECORD" ] || return 0
+    local param prev
+    while read -r param prev; do sysctl_do "$param=$prev" || true; done < "$TUNE_RECORD"
+    rm -f "$TUNE_RECORD"
+}
+apply_tune() {
+    restore_tune   # a start that was killed before it could put them back
+    [ -s "$SETTINGS_FILE" ] && grep -q '"runtime_tuning": *true' "$SETTINGS_FILE" || return 0
+    local i param value
+    : > "$TUNE_RECORD"
+    for i in "${!TUNE_PARAMS[@]}"; do
+        param="${TUNE_PARAMS[$i]}"
+        printf '%s %s\n' "$param" "$(cat "$PROC_SYS/${param//./\/}")" >> "$TUNE_RECORD"
+    done
+    for i in "${!TUNE_PARAMS[@]}"; do
+        param="${TUNE_PARAMS[$i]}"; value="${TUNE_WANT[$i]}"
+        if sysctl_do "$param=$value"; then
+            printf 'runtime tuning: %s=%s\n' "$param" "$value" >&2
+        else
+            echo "runtime tuning needs passwordless sudo: left as it is" >&2
+            rm -f "$TUNE_RECORD"; return 0
+        fi
+    done
+}
+tuned=0
+if [ "$gui" = 0 ]; then
+    apply_tune && [ -s "$TUNE_RECORD" ] && tuned=1
 fi
-exec distrobox enter "$CONTAINER" -- "$EDEN_EXEC" "$@"
+if [ "$INSTALL_MODE" = native ]; then
+    "$EDEN_EXEC" "$@" & pid=$!
+else
+    distrobox enter "$CONTAINER" -- "$EDEN_EXEC" "$@" & pid=$!
+fi
+if [ "$tuned" = 1 ]; then
+    trap restore_tune EXIT
+    trap 'exit 130' INT
+    # Stop the game with us, then put the values back (the EXIT trap).
+    trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; exit 143' TERM HUP
+fi
+rc=0
+wait "$pid" || rc=$?
+restore_tune
+trap - EXIT INT TERM HUP
+exit "$rc"
 WRAP
 MODE=build; RUN_IN="$CONTAINER"
 if [ "$WITH_BUILD" = 0 ]; then

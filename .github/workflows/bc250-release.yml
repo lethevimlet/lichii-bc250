@@ -228,3 +228,61 @@ jobs:
             gh release create "$TAG" lichii-bc250-*.tar.gz* --verify-tag "${pre[@]}" \
               --title "lichii-bc250 $TAG" --notes "$notes"
           fi
+
+  # The Decky plugin ships in the same release as the package, so the plugin's own updater (and
+  # Decky's store) can find it there: lichii-bc250-<tag>-Decky.zip.
+  decky:
+    name: decky plugin
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ (github.event_name == 'push' || github.event.inputs.tag != '') && format('refs/tags/{0}', env.TAG) || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@10.9.8 --activate
+
+      - name: Build the plugin
+        working-directory: decky-plugin
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          test -f dist/index.js
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          pkg=Lichii-BC250
+          mkdir -p "$pkg"
+          cp -r decky-plugin/dist decky-plugin/assets "$pkg/"
+          cp decky-plugin/plugin.json decky-plugin/main.py decky-plugin/package.json \
+             decky-plugin/README.md decky-plugin/LICENSE "$pkg/"
+          # A branch run has no release tag: RELEASE gets a build stamp the panel does not compare.
+          if [ "${{ github.event_name }}" = push ]; then ref="$TAG"; else ref="v0-$(git rev-parse --short=10 HEAD)"; fi
+          printf '%s\n' "$ref" > "$pkg/RELEASE"
+          zip -qr "lichii-bc250-$TAG-Decky.zip" "$pkg"
+          sha256sum "lichii-bc250-$TAG-Decky.zip" > "lichii-bc250-$TAG-Decky.zip.sha256"
+
+      - name: Check the package
+        run: |
+          unzip -l lichii-bc250-*-Decky.zip | grep -E 'Lichii-BC250/(plugin.json|main.py|dist/index.js|assets/launcher.sh)'
+          sha256sum -c lichii-bc250-*-Decky.zip.sha256
+
+      - name: Keep the plugin as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lichii-bc250-${{ env.TAG }}-decky
+          path: lichii-bc250-*-Decky.zip*
+          retention-days: 7
+
+      - name: Add it to the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" lichii-bc250-*-Decky.zip* --clobber

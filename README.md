@@ -112,6 +112,11 @@ and survive its updates.
    **Check:** `cat /proc/sys/vm/watermark_scale_factor` shows `300`, also after a reboot. Coming from
    an earlier version with 1000: run the three lines above again.
 
+   The Decky plugin's System tab also has **Memory settings during games only**: it sets these three
+   at each game's start and puts the previous values back when the game ends (steamos-readonly is not
+   needed; the launch wrapper runs `sudo -n sysctl`). PS5 games then keep their own values instead of
+   playing with the board's.
+
 5. **Swap: a larger zram plus a disk swapfile as a safety net.** Bazzite already has zram
    (compressed swap in RAM), sized at half of RAM (7.4 GB here). Long sessions in big areas filled
    it, and swapping to disk then froze the game for up to 27 s. Make zram three quarters of RAM
@@ -249,6 +254,26 @@ Without Steam, launch a game directly (`game.ini` is used when you give no `-c`)
 ```
 
 **Check:** the game starts (see step 5 for the first boot).
+
+### The Decky plugin (Game Mode)
+
+The same shortcuts, with the games and their settings in Game Mode: `decky-plugin/` is a Decky
+plugin for the console. It installs the emulator from a release, makes a Steam shortcut per game in
+your games folder with artwork from the game's own icon, and from a game's library menu opens its
+page: its add-ons (built-in patches, mods and `cheat_*` files, DLC, update), its settings (frame
+generation and its multiplier, docked mode, language), and what it is. It also carries the system
+steps of step 1 (memory, swap, GTT) with Apply and Revert, and a switch that keeps the three memory
+settings for the games only.
+
+1. Install [Decky Loader](https://decky.xyz) and turn on its developer mode.
+2. Download the latest `lichii-bc250-*-Decky.zip` from
+   [Releases](https://github.com/lethevimlet/lichii-bc250/releases).
+3. Decky settings > Developer > Install Plugin from ZIP File.
+4. In the plugin: **Install** for the emulator, then pick the games folder in the Games tab.
+
+The plugin installs the emulator itself; the step 3 installer is only needed without Decky. Building
+it by hand (`pnpm build`, then copy to `~/homebrew/plugins/Lichii-BC250`, root-owned) is in
+`decky-plugin/README.md`.
 
 ### Step 5: the first launch
 

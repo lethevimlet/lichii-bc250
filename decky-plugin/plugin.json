@@ -1,0 +1,17 @@
+{
+  "name": "Lichii-BC250",
+  "author": "Pix13",
+  "version": "0.2.2",
+  "flags": [
+    "root"
+  ],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "emulator",
+      "root"
+    ],
+    "description": "Switch 2 games on the BC-250: Steam shortcuts for your games with their artwork, add-ons and settings, and the board tuning.",
+    "image": "https://raw.githubusercontent.com/Pix13/lichii-bc250/main/logo.png"
+  }
+}
